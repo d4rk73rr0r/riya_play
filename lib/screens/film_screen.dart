@@ -1,461 +1,1462 @@
-import 'package:better_player/better_player.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:flutter_cache_manager/flutter_cache_manager.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import 'package:riya_play/blocs/film/film_bloc.dart';
+import 'package:riya_play/screens/films_full_screen.dart';
 import 'package:riya_play/services/api_service.dart';
-import 'package:riya_play/services/storage_service.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:riya_play/screens/video_player_screen.dart';
+import 'package:better_player/better_player.dart';
+import 'package:riya_play/services/preferences_service.dart';
 import 'package:riya_play/theme_provider.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:android_intent_plus/android_intent.dart';
+import 'package:riya_play/utils/navigation.dart';
+import 'package:shimmer/shimmer.dart';
+import 'package:riya_play/utils/image_cache_manager.dart';
+import 'package:riya_play/utils/episode_naming.dart';
+import 'package:riya_play/utils/app_logger.dart';
+import 'package:riya_play/screens/download_screen.dart';
+import 'package:riya_play/screens/actor_films_screen.dart';
+import 'package:flutter_iconly/flutter_iconly.dart';
 
-final customCacheManager = CacheManager(
-  Config(
-    'filmImagesCache',
-    stalePeriod: const Duration(days: 7),
-    maxNrOfCacheObjects: 100,
-  ),
-);
-
-class FilmScreen extends StatelessWidget {
+class FilmScreen extends StatefulWidget {
   final int filmId;
 
-  const FilmScreen({required this.filmId, super.key});
+  /// Matches the tag the source [PosterCard] used, if any, so the poster
+  /// morphs into this banner instead of just cutting to the new screen.
+  /// Left null (default), this banner renders without a [Hero] wrapper —
+  /// safe for callers that don't set up a matching tag on their side.
+  final String? heroTag;
+
+  const FilmScreen({required this.filmId, super.key, this.heroTag});
 
   @override
-  Widget build(BuildContext context) {
-    final storage = StorageService();
-    final apiService = ApiService(storage);
+  State<FilmScreen> createState() => _FilmScreenState();
+}
 
-    return BlocProvider(
-      create: (_) => FilmBloc(apiService)..add(FetchFilmDetailsEvent(filmId)),
-      child: BlocBuilder<FilmBloc, FilmState>(
-        builder: (context, state) {
-          final themeProvider = context.watch<ThemeProvider>();
-          return Scaffold(
-            backgroundColor:
-                themeProvider.isDarkMode ? const Color(0xFF111827) : Colors.grey[100],
-            appBar: AppBar(
-              backgroundColor:
-                  themeProvider.isDarkMode ? const Color(0xFF1F2937) : Colors.white,
-              elevation: 2,
-              leading: IconButton(
-                icon: Icon(
-                  forEachIcons.chevron_left,
-                  color: themeProvider.isDarkMode ? Colors.white : Colors.black87,
-                  size: 32,
-                ),
-                onPressed: () => Navigator.of(context).pop(),
+class _FilmScreenState extends State<FilmScreen>
+    with SingleTickerProviderStateMixin {
+  Map<String, dynamic>? film;
+  Map<int, List<dynamic>> episodesBySeason = {};
+  Map<int, Set<int>> loadedEpisodeIdsBySeason = {};
+  int? selectedSeason;
+  Map<int, int?> seasonMapping = {};
+  bool _isLoading = true;
+  bool _isLoadingMore = false;
+  bool isFavorite = false;
+  double _scale = 1.0;
+  bool _isAnimating = false;
+  TabController? _tabController;
+  DateTime? _lastSelectionTime;
+
+  static final Map<int, Map<String, dynamic>> _filmCache = {};
+  static final Map<int, DateTime> _filmCacheTimestamps = {};
+  static final Map<int, List<dynamic>> _seasonsCache = {};
+  static final Map<int, DateTime> _seasonsCacheTimestamps = {};
+  static final Map<String, List<dynamic>> _episodesCache = {};
+  static final Map<String, DateTime> _episodesCacheTimestamps = {};
+
+  String _formatDuration(int seconds) {
+    final duration = Duration(seconds: seconds);
+    String twoDigits(int n) => n.toString().padLeft(2, '0');
+    final hours = twoDigits(duration.inHours);
+    final minutes = twoDigits(duration.inMinutes.remainder(60));
+    final secs = twoDigits(duration.inSeconds.remainder(60));
+
+    if (duration.inHours > 0) {
+      return '$hours:$minutes:$secs';
+    } else {
+      return '$minutes:$secs';
+    }
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFilmDetails();
+    StorageUtils().cleanOldPlaybackPositions();
+  }
+
+  Future<void> _toggleFavorite() async {
+    if (_isAnimating || !mounted) return;
+
+    setState(() {
+      _isAnimating = true;
+      _scale = 1.5;
+    });
+
+    await Future.delayed(const Duration(milliseconds: 150));
+
+    setState(() {
+      _scale = 1.0;
+    });
+
+    try {
+      setState(() {
+        isFavorite = !isFavorite;
+      });
+
+      bool success;
+      if (isFavorite) {
+        success = await ApiService.addToFavorite(widget.filmId);
+      } else {
+        success = await ApiService.removeFromFavorite(widget.filmId);
+      }
+
+      if (!success && mounted) {
+        setState(() {
+          isFavorite = !isFavorite;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Sevimlilarni yangilashda xato yuz berdi"),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          isFavorite = !isFavorite;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Xato yuz berdi, qayta urinib ko‘ring")),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isAnimating = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _loadFilmDetails() async {
+    if (!mounted) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      final results = await Future.wait<Map<String, dynamic>>([
+        _filmCache.containsKey(widget.filmId) &&
+                _filmCacheTimestamps[widget.filmId] != null &&
+                DateTime.now()
+                        .difference(_filmCacheTimestamps[widget.filmId]!)
+                        .inHours <
+                    24
+            ? Future.value(_filmCache[widget.filmId]!)
+            : ApiService.getFilmDetails(widget.filmId).timeout(
+              const Duration(seconds: 10),
+              onTimeout:
+                  () =>
+                      throw Exception("Film ma‘lumotlari yuklanmadi: Timeout"),
+            ),
+      ]);
+
+      final filmData = results[0];
+
+      if (mounted) {
+        setState(() {
+          film = filmData;
+          _filmCache[widget.filmId] = filmData;
+          _filmCacheTimestamps[widget.filmId] = DateTime.now();
+          isFavorite =
+              filmData.containsKey('favorite') && filmData['favorite'] == 1;
+          _isLoading = false;
+        });
+
+        if (isSerial() && film?['season_count'] != null) {
+          await _mapSeasons();
+          if (mounted) {
+            final seasonCount = film!['season_count'] as int? ?? 1;
+            if (seasonCount > 0) {
+              setState(() {
+                selectedSeason = 1;
+                _tabController = TabController(
+                  length: seasonCount,
+                  vsync: this,
+                );
+                for (var i = 1; i <= seasonCount; i++) {
+                  episodesBySeason[i] = [];
+                  loadedEpisodeIdsBySeason[i] = {};
+                }
+                _tabController!.addListener(() {
+                  if (!_tabController!.indexIsChanging) {
+                    _onSeasonSelected(_tabController!.index + 1);
+                  }
+                });
+              });
+              await _loadEpisodes(selectedSeason!, clearExisting: true);
+            }
+          }
+        }
+        _precacheImages();
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text("Film ma‘lumotlarini yuklashda xato yuz berdi"),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _mapSeasons() async {
+    try {
+      final seasonsData =
+          _seasonsCache.containsKey(widget.filmId) &&
+                  _seasonsCacheTimestamps[widget.filmId] != null &&
+                  DateTime.now()
+                          .difference(_seasonsCacheTimestamps[widget.filmId]!)
+                          .inHours <
+                      24
+              ? _seasonsCache[widget.filmId]!
+              : await ApiService.getSeasons(widget.filmId).timeout(
+                const Duration(seconds: 10),
+                onTimeout: () => throw Exception("Fasllar yuklanmadi: Timeout"),
+              );
+
+      appLogger.d("Seasons data: $seasonsData");
+
+      _seasonsCache[widget.filmId] = seasonsData;
+      _seasonsCacheTimestamps[widget.filmId] = DateTime.now();
+
+      final Map<int, int?> seasonMappingTemp = {};
+      for (var i = 0; i < seasonsData.length; i++) {
+        seasonMappingTemp[i + 1] = seasonsData[i]['season_id'] as int?;
+      }
+      if (mounted) {
+        setState(() => seasonMapping = seasonMappingTemp);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Fasllarni yuklashda xato yuz berdi")),
+        );
+      }
+    }
+  }
+
+  Future<void> _refresh() async {
+    if (!mounted) return;
+
+    setState(() {
+      _isLoading = true;
+      film = null;
+      episodesBySeason.clear();
+      loadedEpisodeIdsBySeason.clear();
+      seasonMapping.clear();
+      selectedSeason = null;
+    });
+    await _loadFilmDetails();
+  }
+
+  Future<void> _loadEpisodes(
+    int seasonNumber, {
+    bool clearExisting = false,
+  }) async {
+    if (_isLoadingMore || !mounted) return;
+
+    setState(() => _isLoadingMore = true);
+
+    final int? effectiveSeason = seasonMapping[seasonNumber];
+    if (effectiveSeason == null) {
+      if (mounted) {
+        setState(() {
+          episodesBySeason[seasonNumber] = [];
+          _isLoadingMore = false;
+        });
+      }
+      return;
+    }
+
+    final cacheKey = "${widget.filmId}_$effectiveSeason";
+    try {
+      if (_episodesCache.containsKey(cacheKey) &&
+          !clearExisting &&
+          _episodesCache[cacheKey]!.isNotEmpty &&
+          _episodesCacheTimestamps[cacheKey] != null &&
+          DateTime.now()
+                  .difference(_episodesCacheTimestamps[cacheKey]!)
+                  .inHours <
+              24) {
+        if (mounted) {
+          setState(() {
+            if (clearExisting) {
+              episodesBySeason[seasonNumber] = [];
+              loadedEpisodeIdsBySeason[seasonNumber] = {};
+            }
+            episodesBySeason[seasonNumber] = _episodesCache[cacheKey]!;
+            for (var episode in episodesBySeason[seasonNumber]!) {
+              final episodeId = episode['id'] as int?;
+              if (episodeId != null) {
+                loadedEpisodeIdsBySeason[seasonNumber]!.add(episodeId);
+              }
+            }
+            _isLoadingMore = false;
+          });
+        }
+      } else {
+        final stopwatch = Stopwatch()..start();
+        final episodeData = await ApiService.getEpisodes(
+          widget.filmId,
+          effectiveSeason,
+          page: 1,
+          perPage: 20,
+        ).timeout(
+          const Duration(seconds: 10),
+          onTimeout: () => throw Exception("Epizodlar yuklanmadi: Timeout"),
+        );
+        appLogger.d(
+          "Epizodlar yuklash vaqti: ${stopwatch.elapsedMilliseconds} ms",
+        );
+        if (mounted) {
+          setState(() {
+            if (clearExisting) {
+              episodesBySeason[seasonNumber] = [];
+              loadedEpisodeIdsBySeason[seasonNumber] = {};
+            }
+            if (episodeData.isNotEmpty) {
+              episodesBySeason[seasonNumber] = episodeData;
+              _episodesCache[cacheKey] = episodeData;
+              _episodesCacheTimestamps[cacheKey] = DateTime.now();
+              for (var episode in episodeData) {
+                final episodeId = episode['id'] as int?;
+                if (episodeId != null &&
+                    !loadedEpisodeIdsBySeason[seasonNumber]!.contains(
+                      episodeId,
+                    )) {
+                  loadedEpisodeIdsBySeason[seasonNumber]!.add(episodeId);
+                }
+              }
+            } else {
+              episodesBySeason[seasonNumber] = [];
+            }
+            _isLoadingMore = false;
+          });
+        }
+      }
+      _precacheImages();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoadingMore = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Epizodlarni yuklashda xato yuz berdi")),
+        );
+      }
+    }
+  }
+
+  void _onSeasonSelected(int season) {
+    HapticFeedback.lightImpact();
+    final now = DateTime.now();
+    if (_lastSelectionTime != null &&
+        now.difference(_lastSelectionTime!).inMilliseconds < 500) {
+      return;
+    }
+    _lastSelectionTime = now;
+    if (mounted) {
+      setState(() => selectedSeason = season);
+      if (episodesBySeason[season] == null ||
+          episodesBySeason[season]!.isEmpty) {
+        _loadEpisodes(season, clearExisting: true);
+      }
+    }
+  }
+
+  Future<String> _getValidStreamUrl(String initialUrl) async {
+    try {
+      final response = await ApiService.checkUrlValidity(initialUrl).timeout(
+        const Duration(seconds: 10),
+        onTimeout: () => throw Exception("URL tekshiruvi: Timeout"),
+      );
+      if (response['isValid'] == true) return initialUrl;
+    } catch (e) {}
+
+    try {
+      final updatedFilmData = await ApiService.getFilmDetails(
+        widget.filmId,
+      ).timeout(
+        const Duration(seconds: 10),
+        onTimeout: () => throw Exception("Yangi URL olish: Timeout"),
+      );
+      final newUrl =
+          updatedFilmData['lastSeries']?[0]?['track']?[0]?['stream_url'] ?? '';
+      if (mounted) {
+        setState(() => film = updatedFilmData);
+        _filmCache[widget.filmId] = updatedFilmData;
+        _filmCacheTimestamps[widget.filmId] = DateTime.now();
+      }
+      return newUrl;
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Video URL olishda xato yuz berdi")),
+        );
+      }
+      return initialUrl;
+    }
+  }
+
+  bool isSerial() {
+    return film?['type']?['name_uz'] == "Serial";
+  }
+
+  Future<void> _startDownload() async {
+    if (!mounted) return;
+    HapticFeedback.lightImpact();
+
+    // Serialda "film" degan yagona fayl yo'q — foydalanuvchi qaysi qismni
+    // yuklashini epizodlar ro'yxatidan tanlaydi.
+    if (isSerial()) {
+      Navigator.push(
+        context,
+        createSlideRoute(
+          FilmsFullScreen(
+            filmId: widget.filmId,
+            filmName: film?['name_uz'] ?? 'Noma‘lum',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final lastSeriesList = film?['lastSeries'] as List<dynamic>?;
+    final trackList =
+        (lastSeriesList != null && lastSeriesList.isNotEmpty)
+            ? lastSeriesList[0]['track'] as List<dynamic>?
+            : null;
+    if (trackList == null || trackList.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Yuklab olish uchun video topilmadi")),
+      );
+      return;
+    }
+
+    final streamUrl = trackList[0]['stream_url'] ?? '';
+    final validUrl = await _getValidStreamUrl(streamUrl);
+    if (!mounted) return;
+    if (validUrl.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text("Video URL topilmadi")));
+      return;
+    }
+
+    Navigator.push(
+      context,
+      createSlideRoute(
+        DownloadScreen(
+          videoUrl: validUrl,
+          title: film?['name_uz'] ?? 'Noma‘lum',
+        ),
+      ),
+    );
+  }
+
+  /// Director first, then cast. `getFilmDetails` already asks for
+  /// `actors.files` and `maker.files`, so this costs no extra request — the
+  /// data was being fetched and thrown away.
+  List<Map<String, dynamic>> _buildCast() {
+    final cast = <Map<String, dynamic>>[];
+
+    String? photoOf(Map person) {
+      final files = person['files'];
+      if (files is List && files.isNotEmpty) {
+        return files[0]['linkAbsolute'] as String?;
+      }
+      return null;
+    }
+
+    final maker = film?['maker'];
+    if (maker is Map) {
+      cast.add({
+        'id': maker['id'],
+        'name': maker['name_uz'] ?? maker['name_ru'] ?? 'Rejissyor',
+        'photo': photoOf(maker),
+        'role': 'Rejissyor',
+      });
+    }
+
+    final actors = film?['actors'];
+    if (actors is List) {
+      for (final actor in actors) {
+        if (actor is! Map) continue;
+        cast.add({
+          'id': actor['id'],
+          'name': actor['name_uz'] ?? actor['name_ru'] ?? 'Aktyor',
+          'photo': photoOf(actor),
+          'role': 'Aktyor',
+        });
+      }
+    }
+    return cast;
+  }
+
+  Widget _buildCastStrip(ThemeProvider themeProvider) {
+    final cast = _buildCast();
+    if (cast.isEmpty) return const SizedBox.shrink();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          "Aktyorlar va rejissyor",
+          style: TextStyle(
+            fontSize: 16,
+            fontWeight: FontWeight.w600,
+            color: themeProvider.textColor,
+          ),
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          height: 150,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: cast.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 12),
+            itemBuilder: (context, index) {
+              final person = cast[index];
+              final id = person['id'] as int?;
+              return _CastTile(
+                name: person['name'] as String,
+                role: person['role'] as String,
+                photoUrl: person['photo'] as String?,
+                themeProvider: themeProvider,
+                // Rejissyor uchun alohida endpoint yo'q — faqat aktyorlar
+                // bosiladigan bo'ladi.
+                onTap:
+                    (id == null || person['role'] != 'Aktyor')
+                        ? null
+                        : () {
+                          HapticFeedback.lightImpact();
+                          Navigator.push(
+                            context,
+                            createSlideRoute(
+                              ActorFilmsScreen(
+                                actorId: id,
+                                actorName: person['name'] as String,
+                              ),
+                            ),
+                          );
+                        },
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 16),
+      ],
+    );
+  }
+
+  /// [title] pleer sarlavhasi uchun ("3-qism" kabi qisqa nom), [downloadTitle]
+  /// esa fayl nomi uchun — epizodlar uchun ular farq qiladi.
+  Future<void> _playVideo(
+    String url,
+    String title, {
+    String? downloadTitle,
+    int? episodeId,
+  }) async {
+    if (!mounted) return;
+
+    HapticFeedback.lightImpact();
+    final validUrl = await _getValidStreamUrl(url);
+    if (validUrl.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("Video URL topilmadi")));
+      }
+      return;
+    }
+
+    // Pozitsiya faqat serverdan olinadi — lokal nusxa boshqa qurilmada
+    // ko'rilganini bilmaydi va qayta o'rnatishda yo'qoladi.
+    final savedPosition =
+        episodeId == null
+            ? null
+            : await ApiService.getWatchedSeconds(episodeId);
+
+    bool? resumePlayback;
+    if (savedPosition != null && savedPosition > 0) {
+      resumePlayback = await showDialog<bool>(
+        context: context,
+        builder:
+            (context) => AlertDialog(
+              title: const Text("Davom ettirish"),
+              content: Text(
+                "'$title' ni ${_formatDuration(savedPosition)} dan davom ettirishni xohlaysizmi?",
               ),
-              title: Text(
-                state.film?['name_uz'] ?? "Noma'lum", // S.of(context).unknown o‘rniga
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  color: themeProvider.isDarkMode ? Colors.white : Colors.black87,
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context, false),
+                  child: const Text("Yo‘q"),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(context, true),
+                  child: const Text("Ha"),
+                ),
+              ],
+            ),
+      );
+
+      if (resumePlayback == null) return;
+    }
+
+    final selectedPlayer = await showDialog<String>(
+      context: context,
+      builder:
+          (context) => AlertDialog(
+            title: const Text("Pleerni tanlang"),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.play_circle_filled),
+                    title: const Text("Ichki pleer: Better Player"),
+                    onTap: () => Navigator.pop(context, 'better_player'),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.video_library),
+                    title: const Text("Tashqi pleer bilan ochish"),
+                    onTap: () => Navigator.pop(context, 'external'),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.download),
+                    title: const Text("Yuklab olish"),
+                    onTap: () => Navigator.pop(context, 'download'),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text("Bekor qilish"),
+              ),
+            ],
+          ),
+    );
+
+    if (selectedPlayer == null) return;
+
+    if (selectedPlayer == 'download') {
+      if (mounted) {
+        Navigator.push(
+          context,
+          createSlideRoute(
+            DownloadScreen(
+              videoUrl: validUrl,
+              title: downloadTitle ?? title,
+            ),
+          ),
+        );
+      }
+      return;
+    }
+
+    if (selectedPlayer == 'better_player') {
+      if (mounted) {
+        await Navigator.push(
+          context,
+          createSlideRoute(
+            VideoPlayerScreen(
+              videoUrl: validUrl,
+              title: title,
+              episodeId: episodeId,
+              liveStream: false,
+              autoPlay: true,
+              fullScreenByDefault: false,
+              deviceOrientationsOnFullScreen: const [
+                DeviceOrientation.landscapeLeft,
+                DeviceOrientation.landscapeRight,
+              ],
+              deviceOrientationsAfterFullScreen: const [
+                DeviceOrientation.portraitUp,
+                DeviceOrientation.portraitDown,
+              ],
+              autoDetectFullscreenDeviceOrientation: false,
+              controlsConfiguration: const BetterPlayerControlsConfiguration(
+                enableFullscreen: true,
+                enablePlayPause: true,
+                enableMute: true,
+                enableProgressText: true,
+                enableSkips: true,
+                enableQualities: true,
+                enableAudioTracks: true,
+              ),
+              notificationConfiguration:
+                  const BetterPlayerNotificationConfiguration(
+                    showNotification: false,
+                  ),
+              startAt:
+                  resumePlayback == true && savedPosition != null
+                      ? Duration(seconds: savedPosition)
+                      : null,
+            ),
+          ),
+        );
+      }
+    } else if (selectedPlayer == 'external') {
+      try {
+        final intent = AndroidIntent(
+          action: 'action_view',
+          data: validUrl,
+          type: 'video/*',
+        );
+        await intent.launch();
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("Tashqi pleerni ochishda xato yuz berdi"),
+            ),
+          );
+        }
+      }
+    }
+  }
+
+  void _precacheImages() {
+    Future.microtask(() {
+      final coverUrl =
+          film != null && film!['files'] != null && film!['files'].isNotEmpty
+              ? film!['files'][0]['linkAbsolute'] ??
+                  'https://placehold.co/150x150'
+              : 'https://placehold.co/150x150';
+      precacheImage(
+        CachedNetworkImageProvider(coverUrl, cacheManager: filmImagesCacheManager),
+        context,
+        onError: (_, __) {},
+      );
+
+      final episodes = episodesBySeason[selectedSeason] ?? [];
+      for (var episode in episodes) {
+        final screenshot =
+            episode['screenshots'] != null &&
+                    episode['screenshots'].isNotEmpty &&
+                    episode['screenshots'][0]['file'] != null &&
+                    episode['screenshots'][0]['file'].isNotEmpty &&
+                    episode['screenshots'][0]['file'][0]['thumbnails'] !=
+                        null &&
+                    episode['screenshots'][0]['file'][0]['thumbnails']['small'] !=
+                        null
+                ? episode['screenshots'][0]['file'][0]['thumbnails']['small']['src']
+                : 'https://placehold.co/150x150';
+        precacheImage(
+          CachedNetworkImageProvider(
+            screenshot,
+            cacheManager: filmImagesCacheManager,
+          ),
+          context,
+          onError: (_, __) {},
+        );
+      }
+    });
+  }
+
+  String _getGenresText(List<dynamic> genres) {
+    if (genres.isEmpty) return 'Noma‘lum';
+    return genres.map((genre) => genre['name_uz'] ?? 'Noma‘lum').join(', ');
+  }
+
+  @override
+  void dispose() {
+    _tabController?.dispose();
+    super.dispose();
+  }
+
+  Widget _buildSkeletonLoader() {
+    final themeProvider = Provider.of<ThemeProvider>(context, listen: false);
+    return ListView.builder(
+      scrollDirection: Axis.horizontal,
+      itemCount: 5,
+      itemBuilder:
+          (context, index) => Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: Shimmer.fromColors(
+              baseColor:
+                  themeProvider.isDarkMode
+                      ? Colors.grey[700]!
+                      : Colors.grey[300]!,
+              highlightColor:
+                  themeProvider.isDarkMode
+                      ? Colors.grey[600]!
+                      : Colors.grey[100]!,
+              child: SizedBox(
+                width: (MediaQuery.of(context).size.width - 32) / 2 - 12,
+                height: 136,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      width: (MediaQuery.of(context).size.width - 32) / 2 - 12,
+                      height: 100,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(6),
+                        color: themeProvider.cardColor,
+                      ),
+                    ),
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4.0, right: 8.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Container(
+                            width: 100,
+                            height: 12,
+                            color: themeProvider.cardColor,
+                          ),
+                          const SizedBox(height: 2),
+                          Container(
+                            width: 50,
+                            height: 12,
+                            color: themeProvider.cardColor,
+                          ),
+                          const SizedBox(height: 6),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
-            body: state.isLoading
-                ? Center(
-                    child: CircularProgressIndicator(
-                      color: themeProvider.isDarkMode ? Colors.white : Colors.blue,
-                    ),
-                  )
-                : state.film == null
-                    ? Center(
-                        child: Text(
-                          "Film ma'lumotlari yo'q", // S.of(context).noFilmData o‘rniga
-                          style: TextStyle(
-                            fontSize: 16,
-                            color: themeProvider.isDarkMode
-                                ? Colors.grey[400]
-                                : Colors.grey,
+          ),
+    );
+  }
+
+  Widget _buildBannerImage() {
+    final coverUrl =
+        film != null && film!['files'] != null && film!['files'].isNotEmpty
+            ? film!['files'][0]['linkAbsolute'] ??
+                'https://placehold.co/150x150'
+            : 'https://placehold.co/150x150';
+    final image = CachedNetworkImage(
+      imageUrl: coverUrl,
+      cacheManager: filmImagesCacheManager,
+      fit: BoxFit.cover,
+      width: double.infinity,
+      height: double.infinity,
+    );
+    return widget.heroTag == null
+        ? image
+        : Hero(tag: widget.heroTag!, child: image);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+
+    SystemChrome.setSystemUIOverlayStyle(
+      const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+        statusBarBrightness: Brightness.dark,
+      ),
+    );
+
+    return Scaffold(
+      backgroundColor: themeProvider.backgroundColor,
+      extendBodyBehindAppBar: true, // Muqova AppBar orqasiga cho‘ziladi
+      appBar: AppBar(
+        backgroundColor: Colors.transparent, // Fonni to‘liq shaffof qilamiz
+        elevation: 0,
+        leading: IconButton(
+          icon: Icon(
+            Icons.chevron_left,
+            color: themeProvider.iconColor,
+            size: 32,
+          ),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
+      ),
+      body:
+          _isLoading
+              ? const Center(child: CircularProgressIndicator(strokeWidth: 2))
+              : film == null
+              ? Center(
+                child: Text(
+                  "Film ma‘lumotlari topilmadi",
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: themeProvider.subTextColor,
+                  ),
+                ),
+              )
+              : RefreshIndicator(
+                onRefresh: _refresh,
+                child: SingleChildScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      // To‘liq ekran kengligida muqova bilan qoramtir gradient
+                      Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          // Tasvir qatlami
+                          SizedBox(
+                            width: MediaQuery.of(context).size.width,
+                            height: MediaQuery.of(context).size.height * 0.6,
+                            child: _buildBannerImage(),
                           ),
-                        ),
-                      )
-                    : SingleChildScrollView(
-                        child: Padding(
-                          padding: const EdgeInsets.all(16.0),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  CachedNetworkImage(
-                                    imageUrl:
-                                        state.film?['files']?.isNotEmpty == true
-                                            ? state.film!['files'][0]['linkAbsolute'] ??
-                                                ''
-                                            : 'https://placehold.co/150x150',
-                                    cacheManager: customCacheManager,
-                                    width: 150,
-                                    height: 200,
-                                    fit: BoxFit.cover,
-                                    placeholder: (context, url) => Container(
-                                      width: 150,
-                                      height: 200,
-                                      color: themeProvider.isDarkMode
-                                          ? const Color(0xFF374151)
-                                          : Colors.grey[300],
-                                      child: const Center(
-                                        child: CircularProgressIndicator(),
-                                      ),
-                                    ),
-                                    errorWidget: (context, url, error) => Container(
-                                      width: 150,
-                                      height: 200,
-                                      color: themeProvider.isDarkMode
-                                          ? const Color(0xFF374151)
-                                          : Colors.grey[300],
-                                      child: const Center(
-                                        child: Text("Rasm yuklanmadi"),
-                                      ),
-                                    ),
+                          // Gradient qatlami
+                          Container(
+                            width: MediaQuery.of(context).size.width,
+                            height: MediaQuery.of(context).size.height * 0.6,
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [
+                                  Colors.transparent, // Yuqori qism shaffof
+                                  Colors.black.withOpacity(
+                                    0.7,
+                                  ), // Pastroq qoramtirlik
+                                ],
+                                stops: const [
+                                  0.6,
+                                  1.0,
+                                ], // Gradient pastki 40% da qorayadi
+                              ),
+                            ),
+                          ),
+                          // Status bar va orqaga tugmasi uchun qoramtirlik.
+                          // Muqova endi status bar ortidan ko'rinadi, shuning
+                          // uchun ochiq rangli muqovada oq ikonkalar yo'qolib
+                          // ketmasligi kerak. Bu qatlam AppBar'ning
+                          // flexibleSpace'i o'rniga shu yerda: muqova bilan
+                          // bitta Stack'da bo'lgani uchun aniq ustiga tushadi.
+                          Positioned(
+                            top: 0,
+                            left: 0,
+                            right: 0,
+                            child: IgnorePointer(
+                              child: Container(
+                                height:
+                                    MediaQuery.of(context).padding.top +
+                                    kToolbarHeight,
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    begin: Alignment.topCenter,
+                                    end: Alignment.bottomCenter,
+                                    colors: [
+                                      Colors.black.withOpacity(0.65),
+                                      Colors.black.withOpacity(0.25),
+                                      Colors.transparent,
+                                    ],
+                                    stops: const [0.0, 0.55, 1.0],
                                   ),
-                                  const SizedBox(width: 16),
-                                  Expanded(
-                                    child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          "${state.film?['name_uz']} (${state.film?['year'] ?? "Noma'lum"})", // S.of(context).unknown o‘rniga
-                                          style: TextStyle(
-                                            fontSize: 24,
-                                            fontWeight: FontWeight.bold,
-                                            color: themeProvider.isDarkMode
-                                                ? Colors.white
-                                                : Colors.black87,
-                                          ),
-                                        ),
-                                        const SizedBox(height: 8),
-                                        if (state.isSerial &&
-                                            state.film?['season_count'] != null &&
-                                            state.film?['episode_count'] != null)
-                                          Text(
-                                            "${state.film?['season_count']} Mavsum, ${state.film?['episode_count']} Epizod", // S.of(context).seasons va .episodes o‘rniga
-                                            style: TextStyle(
-                                              fontSize: 14,
-                                              color: themeProvider.isDarkMode
-                                                  ? Colors.grey[400]
-                                                  : Colors.grey,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      Padding(
+                        padding: const EdgeInsets.all(16.0),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            // "Ko‘rishni boshlash" va "Sevimli" tugmalari yonma-yon
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                Expanded(
+                                  child: ElevatedButton(
+                                    onPressed: () {
+                                      if (isSerial()) {
+                                        Navigator.push(
+                                          context,
+                                          createSlideRoute(
+                                            FilmsFullScreen(
+                                              filmId: widget.filmId,
+                                              filmName:
+                                                  film?['name_uz'] ??
+                                                  'Noma‘lum',
                                             ),
                                           ),
+                                        );
+                                      } else if (!isSerial() &&
+                                          film != null &&
+                                          film!['lastSeries'] != null &&
+                                          film!['lastSeries'].isNotEmpty) {
+                                        final lastSeriesList =
+                                            film!['lastSeries']
+                                                as List<dynamic>;
+                                        final trackList =
+                                            lastSeriesList.isNotEmpty
+                                                ? lastSeriesList[0]['track']
+                                                    as List<dynamic>?
+                                                : null;
+                                        if (trackList != null &&
+                                            trackList.isNotEmpty) {
+                                          final streamUrl =
+                                              trackList[0]['stream_url'] ?? '';
+                                          _playVideo(
+                                            streamUrl,
+                                            film!['name_uz'] ?? 'Noma‘lum',
+                                            episodeId:
+                                                lastSeriesList[0]['id']
+                                                    as int?,
+                                          );
+                                        } else {
+                                          ScaffoldMessenger.of(
+                                            context,
+                                          ).showSnackBar(
+                                            const SnackBar(
+                                              content: Text(
+                                                "Film uchun video mavjud emas",
+                                              ),
+                                            ),
+                                          );
+                                        }
+                                      }
+                                    },
+                                    style: ElevatedButton.styleFrom(
+                                      backgroundColor:
+                                          themeProvider
+                                              .buttonColor, // Asosiy tugma rangi
+                                      foregroundColor: Colors.white,
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 14,
+                                      ), // Balandlikni belgilash
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                    ),
+                                    child: const Row(
+                                      mainAxisAlignment:
+                                          MainAxisAlignment.center,
+                                      children: [
+                                        Icon(Icons.play_arrow, size: 20),
+                                        SizedBox(width: 8),
                                         Text(
-                                          "Janr: ${_getGenresText(state.film?['genres'] ?? [])}", // S.of(context).genre o‘rniga
-                                          style: TextStyle(
-                                            fontSize: 14,
-                                            color: themeProvider.isDarkMode
-                                                ? Colors.grey[400]
-                                                : Colors.grey,
-                                          ),
-                                        ),
-                                        Text(
-                                          "Kinopoisk: ${state.film?['kinopoisk_rating'] ?? "Noma'lum"}", // S.of(context).kinopoisk o‘rniga
-                                          style: TextStyle(
-                                            fontSize: 14,
-                                            color: themeProvider.isDarkMode
-                                                ? Colors.grey[400]
-                                                : Colors.grey,
-                                          ),
-                                        ),
-                                        Text(
-                                          "IMDb: ${state.film?['imdb_rating'] ?? "Noma'lum"}", // S.of(context).unknown o‘rniga
-                                          style: TextStyle(
-                                            fontSize: 14,
-                                            color: themeProvider.isDarkMode
-                                                ? Colors.grey[400]
-                                                : Colors.grey,
-                                          ),
+                                          "Ko‘rishni boshlash",
+                                          textAlign: TextAlign.center,
                                         ),
                                       ],
                                     ),
                                   ),
-                                ],
-                              ),
-                              const SizedBox(height: 16),
-                              Text(
-                                "Tavsif", // S.of(context).description o‘rniga
-                                style: TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                  color: themeProvider.isDarkMode
-                                      ? Colors.white
-                                      : Colors.black87,
                                 ),
-                              ),
-                              Text(
-                                state.film?['description_uz'] ?? "Tavsif yo'q", // S.of(context).noDescription o‘rniga
-                                style: TextStyle(
-                                  fontSize: 14,
-                                  color: themeProvider.isDarkMode
-                                      ? Colors.grey[400]
-                                      : Colors.grey,
-                                ),
-                              ),
-                              const SizedBox(height: 16),
-                              if (!state.isSerial &&
-                                  state.film?['lastSeries']?.isNotEmpty == true)
+                                const SizedBox(width: 8),
                                 ElevatedButton(
-                                  onPressed: () {
-                                    final trackList =
-                                        state.film!['lastSeries'][0]['track']
-                                            as List<dynamic>?;
-                                    if (trackList != null && trackList.isNotEmpty) {
-                                      context.read<FilmBloc>().add(
-                                            PlayVideoEvent(
-                                              trackList[0]['stream_url'] ?? '',
-                                              state.film!['name_uz'],
-                                            ),
-                                          );
-                                    }
-                                  },
+                                  onPressed: _startDownload,
                                   style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.blue[500],
+                                    backgroundColor: themeProvider.buttonColor,
                                     foregroundColor: Colors.white,
                                     padding: const EdgeInsets.symmetric(
-                                      horizontal: 16,
-                                      vertical: 10,
+                                      vertical: 12,
                                     ),
+                                    minimumSize: const Size(56, 0),
                                     shape: RoundedRectangleBorder(
-                                      borderRadius: BorderRadius.circular(12),
+                                      borderRadius: BorderRadius.circular(8),
                                     ),
                                   ),
-                                  child: Text("Filmni ko'rish"), // S.of(context).watchFilm o‘rniga
-                                ),
-                              if (state.isSerial) ...[
-                                const SizedBox(height: 16),
-                                Text(
-                                  "Mavsumlar", // S.of(context).seasons o‘rniga
-                                  style: TextStyle(
-                                    fontSize: 18,
-                                    fontWeight: FontWeight.bold,
-                                    color: themeProvider.isDarkMode
-                                        ? Colors.white
-                                        : Colors.black87,
+                                  child: const Icon(
+                                    IconlyLight.download,
+                                    color: Colors.white,
+                                    size: 24,
                                   ),
                                 ),
-                                SingleChildScrollView(
-                                  scrollDirection: Axis.horizontal,
-                                  child: Row(
-                                    children: List.generate(
-                                      state.film!['season_count'] ?? 1,
-                                      (index) {
-                                        final season = index + 1;
-                                        return Padding(
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 4.0,
-                                          ),
-                                          child: ElevatedButton(
-                                            onPressed: () =>
-                                                context.read<FilmBloc>().add(
-                                                      SelectSeasonEvent(season),
-                                                    ),
-                                            style: ElevatedButton.styleFrom(
-                                              backgroundColor:
-                                                  state.selectedSeason == season
-                                                      ? Colors.blue[500]
-                                                      : (themeProvider.isDarkMode
-                                                          ? const Color(0xFF1F2937)
-                                                          : Colors.grey[200]),
-                                              foregroundColor:
-                                                  state.selectedSeason == season
-                                                      ? Colors.white
-                                                      : (themeProvider.isDarkMode
-                                                          ? Colors.white
-                                                          : Colors.black87),
-                                              padding: const EdgeInsets.symmetric(
-                                                horizontal: 16,
-                                                vertical: 10,
-                                              ),
-                                              shape: RoundedRectangleBorder(
-                                                borderRadius:
-                                                    BorderRadius.circular(20),
-                                              ),
-                                            ),
-                                            child: Text(
-                                              "Mavsum $season", // S.of(context).season o‘rniga
-                                            ),
-                                          ),
-                                        );
-                                      },
+                                const SizedBox(width: 8),
+                                ElevatedButton(
+                                  onPressed: _toggleFavorite,
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor:
+                                        themeProvider
+                                            .buttonColor, // Xuddi shu rang
+                                    foregroundColor: Colors.white,
+                                    padding: const EdgeInsets.symmetric(
+                                      vertical: 12,
+                                    ), // Xuddi shu balandlik
+                                    minimumSize: const Size(
+                                      56,
+                                      0,
+                                    ), // Minimal kenglikni belgilash
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                  ),
+                                  child: AnimatedScale(
+                                    scale: _scale,
+                                    duration: const Duration(milliseconds: 150),
+                                    curve: Curves.easeInOut,
+                                    child: Icon(
+                                      isFavorite
+                                          ? Icons.favorite
+                                          : Icons.favorite_border,
+                                      color:
+                                          isFavorite
+                                              ? Colors.red
+                                              : themeProvider
+                                                  .iconColor, // Qizil rang shartli
+                                      size: 24,
                                     ),
                                   ),
                                 ),
-                                const SizedBox(height: 16),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+                            // Kontent nomi, yili va boshqa ma‘lumotlar
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
                                 Text(
-                                  "Epizodlar (Mavsum ${state.selectedSeason ?? 1})", // S.of(context).episodes va .season o‘rniga
+                                  "${film?['name_uz'] ?? 'Noma‘lum'} (${film?['year'] ?? 'Noma‘lum'})",
                                   style: TextStyle(
-                                    fontSize: 18,
+                                    fontSize: 24,
                                     fontWeight: FontWeight.bold,
-                                    color: themeProvider.isDarkMode
-                                        ? Colors.white
-                                        : Colors.black87,
+                                    color: themeProvider.textColor,
                                   ),
                                 ),
-                                SizedBox(
-                                  height: MediaQuery.of(context).size.height * 0.5,
-                                  child: state.episodes.isEmpty && !state.isLoadingMore
-                                      ? Center(
+                                const SizedBox(height: 8),
+                                if (isSerial() &&
+                                    film?['season_count'] != null &&
+                                    film?['episode_count'] != null)
+                                  Text(
+                                    "${film?['season_count']} fasl, ${film?['episode_count']} qism",
+                                    style: TextStyle(
+                                      fontSize: 14,
+                                      color: themeProvider.subTextColor,
+                                    ),
+                                  ),
+                                Text(
+                                  "Janr: ${_getGenresText(film?['genres'] ?? [])}",
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: themeProvider.subTextColor,
+                                  ),
+                                ),
+                                Text(
+                                  "Kinopoisk: ${film?['kinopoisk_rating'] ?? 'Noma‘lum'}",
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: themeProvider.subTextColor,
+                                  ),
+                                ),
+                                Text(
+                                  "IMDb: ${film?['imdb_rating'] ?? 'Noma‘lum'}",
+                                  style: TextStyle(
+                                    fontSize: 14,
+                                    color: themeProvider.subTextColor,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 16),
+                            // Tavsif sarlavhasi olib tashlandi, faqat matn qoldi
+                            Text(
+                              film?['description_uz'] ?? "Tavsif mavjud emas",
+                              style: TextStyle(
+                                fontSize: 14,
+                                color: themeProvider.subTextColor,
+                              ),
+                            ),
+                            const SizedBox(height: 16),
+                            _buildCastStrip(themeProvider),
+                            if (!isSerial() &&
+                                film != null &&
+                                film!['lastSeries'] != null &&
+                                film!['lastSeries'].isNotEmpty)
+                              const SizedBox.shrink(),
+                            if (isSerial()) ...[
+                              const SizedBox(height: 16),
+                              if (_tabController != null &&
+                                  (film?['season_count'] ?? 0) > 0)
+                                TabBar(
+                                  controller: _tabController,
+                                  isScrollable: true,
+                                  tabAlignment: TabAlignment.start,
+                                  indicatorColor:
+                                      themeProvider.currentDeviceIconColor,
+                                  labelColor: themeProvider.textColor,
+                                  unselectedLabelColor:
+                                      themeProvider.subTextColor,
+                                  tabs: List.generate(
+                                    film != null &&
+                                            film!['season_count'] != null
+                                        ? film!['season_count'] as int
+                                        : 1,
+                                    (index) => Tab(text: "Fasl ${index + 1}"),
+                                  ),
+                                  onTap: (index) {
+                                    _onSeasonSelected(index + 1);
+                                  },
+                                )
+                              else
+                                const SizedBox.shrink(),
+                              const SizedBox(height: 16),
+                              SizedBox(
+                                height: 136,
+                                child:
+                                    _isLoadingMore
+                                        ? _buildSkeletonLoader()
+                                        : (episodesBySeason[selectedSeason] ??
+                                                [])
+                                            .isEmpty
+                                        ? Center(
                                           child: Text(
-                                            "Epizodlar yo'q", // S.of(context).noEpisodes o‘rniga
+                                            "Bu fasl uchun epizodlar topilmadi yoki ularga kirish imkoni yo‘q",
                                             style: TextStyle(
                                               fontSize: 16,
-                                              color: themeProvider.isDarkMode
-                                                  ? Colors.grey[400]
-                                                  : Colors.grey,
+                                              color: themeProvider.subTextColor,
                                             ),
+                                            textAlign: TextAlign.center,
                                           ),
                                         )
-                                      : GridView.builder(
-                                          controller:
-                                              context.read<FilmBloc>().scrollController,
-                                          gridDelegate:
-                                              const SliverGridDelegateWithFixedCrossAxisCount(
-                                            crossAxisCount: 2,
-                                            crossAxisSpacing: 12,
-                                            mainAxisSpacing: 12,
-                                            childAspectRatio: 2.5,
-                                          ),
-                                          itemCount: state.episodes.length +
-                                              (state.isLoadingMore ? 1 : 0),
+                                        : ListView.builder(
+                                          scrollDirection: Axis.horizontal,
+                                          cacheExtent: 1000,
+                                          itemCount:
+                                              episodesBySeason[selectedSeason]
+                                                  ?.length ??
+                                              0,
                                           itemBuilder: (context, index) {
-                                            if (index == state.episodes.length)
-                                              return const Center(
-                                                child: CircularProgressIndicator(),
-                                              );
-                                            final episode = state.episodes[index];
-                                            return Container(
-                                              decoration: BoxDecoration(
-                                                borderRadius:
-                                                    BorderRadius.circular(12),
-                                                color: themeProvider.isDarkMode
-                                                    ? const Color(0xFF1F2937)
-                                                    : Colors.white,
-                                                boxShadow: [
-                                                  BoxShadow(
-                                                    color:
-                                                        Colors.black.withOpacity(0.1),
-                                                    blurRadius: 6,
-                                                    offset: const Offset(0, 2),
-                                                  ),
-                                                ],
+                                            final episode =
+                                                episodesBySeason[selectedSeason]![index];
+                                            return Padding(
+                                              padding: const EdgeInsets.only(
+                                                right: 12,
                                               ),
-                                              child: Material(
-                                                color: Colors.transparent,
-                                                child: InkWell(
-                                                  borderRadius:
-                                                      BorderRadius.circular(12),
-                                                  onTap: () {
-                                                    final trackList =
-                                                        episode['track']
-                                                            as List<dynamic>?;
-                                                    if (trackList != null &&
-                                                        trackList.isNotEmpty) {
-                                                      context.read<FilmBloc>().add(
-                                                            PlayVideoEvent(
-                                                              trackList[0]
-                                                                      ['stream_url'] ??
-                                                                  '',
-                                                              episode['name_uz'] ??
-                                                                  "Epizod ${index + 1}", // S.of(context).episode o‘rniga
-                                                            ),
-                                                          );
-                                                    }
-                                                  },
-                                                  child: Padding(
-                                                    padding: const EdgeInsets.all(12.0),
-                                                    child: Row(
-                                                      children: [
-                                                        Container(
-                                                          width: 40,
-                                                          height: 40,
-                                                          decoration: BoxDecoration(
-                                                            color: themeProvider
-                                                                    .isDarkMode
-                                                                ? Colors.blue[700]
-                                                                : Colors.blue[200],
-                                                            shape: BoxShape.circle,
+                                              child: EpisodeCard(
+                                                episode: episode,
+                                                index: index,
+                                                onTap: () {
+                                                  final trackList =
+                                                      episode['track']
+                                                          as List<dynamic>?;
+                                                  if (trackList != null &&
+                                                      trackList.isNotEmpty) {
+                                                    final streamUrl =
+                                                        trackList[0]['stream_url'] ??
+                                                        '';
+                                                    _playVideo(
+                                                      streamUrl,
+                                                      episode['name_uz'] ??
+                                                          "Qism ${index + 1}",
+                                                      downloadTitle:
+                                                          buildEpisodeDownloadTitle(
+                                                            seriesName:
+                                                                film?['name_uz'] ??
+                                                                'Noma‘lum',
+                                                            seasonNumber:
+                                                                selectedSeason ??
+                                                                1,
+                                                            episodeIndex: index,
+                                                            episodeName:
+                                                                episode['name_uz'],
                                                           ),
-                                                          child: Center(
-                                                            child: Text(
-                                                              "${index + 1}",
-                                                              style: TextStyle(
-                                                                fontSize: 16,
-                                                                fontWeight:
-                                                                    FontWeight.bold,
-                                                                color: themeProvider
-                                                                        .isDarkMode
-                                                                    ? Colors.white
-                                                                    : Colors.blue[800],
-                                                              ),
-                                                            ),
-                                                          ),
+                                                      episodeId:
+                                                          episode['id'] as int?,
+                                                    );
+                                                  } else {
+                                                    ScaffoldMessenger.of(
+                                                      context,
+                                                    ).showSnackBar(
+                                                      const SnackBar(
+                                                        content: Text(
+                                                          "Epizod uchun video mavjud emas",
                                                         ),
-                                                        const SizedBox(width: 12),
-                                                        Expanded(
-                                                          child: Column(
-                                                            crossAxisAlignment:
-                                                                CrossAxisAlignment.start,
-                                                            mainAxisAlignment:
-                                                                MainAxisAlignment.center,
-                                                            children: [
-                                                              Text(
-                                                                episode['name_uz'] ??
-                                                                    "Epizod ${index + 1}", // S.of(context).episode o‘rniga
-                                                                style: TextStyle(
-                                                                  fontSize: 14,
-                                                                  fontWeight:
-                                                                      FontWeight.w500,
-                                                                  color: themeProvider
-                                                                          .isDarkMode
-                                                                      ? Colors.white
-                                                                      : Colors.black87,
-                                                                ),
-                                                                maxLines: 1,
-                                                                overflow:
-                                                                    TextOverflow.ellipsis,
-                                                              ),
-                                                              if (episode['duration'] != null)
-                                                                Text(
-                                                                  _formatDuration(
-                                                                    episode['duration'],
-                                                                  ),
-                                                                  style: TextStyle(
-                                                                    fontSize: 12,
-                                                                    color: themeProvider
-                                                                            .isDarkMode
-                                                                        ? Colors.grey[400]
-                                                                        : Colors.grey[600],
-                                                                  ),
-                                                                ),
-                                                            ],
-                                                          ),
-                                                        ),
-                                                        Icon(
-                                                          Icons.play_arrow_rounded,
-                                                          color: themeProvider.isDarkMode
-                                                              ? Colors.blue[300]
-                                                              : Colors.blue[600],
-                                                        ),
-                                                      ],
-                                                    ),
-                                                  ),
-                                                ),
+                                                      ),
+                                                    );
+                                                  }
+                                                },
                                               ),
                                             );
                                           },
                                         ),
+                              ),
+                              const SizedBox(height: 16),
+                              ElevatedButton(
+                                onPressed: () {
+                                  Navigator.push(
+                                    context,
+                                    createSlideRoute(
+                                      FilmsFullScreen(
+                                        filmId: widget.filmId,
+                                        filmName:
+                                            film?['name_uz'] ?? 'Noma‘lum',
+                                      ),
+                                    ),
+                                  );
+                                },
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: themeProvider.buttonColor,
+                                  foregroundColor: Colors.white,
+                                  padding: const EdgeInsets.symmetric(
+                                    vertical: 10,
+                                  ),
+                                  minimumSize: const Size(double.infinity, 0),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
                                 ),
-                              ],
+                                child: const Text(
+                                  "Barcha qismlar",
+                                  textAlign: TextAlign.center,
+                                ),
+                              ),
                             ],
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+    );
+  }
+}
+
+class EpisodeCard extends StatelessWidget {
+  final dynamic episode;
+  final int index;
+  final VoidCallback onTap;
+
+  const EpisodeCard({
+    super.key,
+    required this.episode,
+    required this.index,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final themeProvider = Provider.of<ThemeProvider>(context, listen: false);
+    final isLastSeen = episode['is_last_seen'] == true;
+
+    return SizedBox(
+      width: (MediaQuery.of(context).size.width - 32) / 2 - 12,
+      height: 136,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: (MediaQuery.of(context).size.width - 32) / 2 - 12,
+            height: 100,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(6),
+              color: themeProvider.cardColor,
+            ),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(6),
+                onTap: () {
+                  HapticFeedback.lightImpact();
+                  onTap();
+                },
+                child: Stack(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(6),
+                      child: CachedNetworkImage(
+                        imageUrl:
+                            episode['screenshots'] != null &&
+                                    episode['screenshots'].isNotEmpty &&
+                                    episode['screenshots'][0]['file'] != null &&
+                                    episode['screenshots'][0]['file']
+                                        .isNotEmpty &&
+                                    episode['screenshots'][0]['file'][0]['thumbnails'] !=
+                                        null &&
+                                    episode['screenshots'][0]['file'][0]['thumbnails']['small'] !=
+                                        null
+                                ? episode['screenshots'][0]['file'][0]['thumbnails']['small']['src']
+                                : 'https://placehold.co/150x150',
+                        cacheManager: filmImagesCacheManager,
+                        width:
+                            (MediaQuery.of(context).size.width - 32) / 2 - 12,
+                        height: 100,
+                        fit: BoxFit.cover,
+                        placeholder:
+                            (context, url) => Container(
+                              width:
+                                  (MediaQuery.of(context).size.width - 32) / 2 -
+                                  12,
+                              height: 100,
+                              color: Colors.transparent,
+                              child: Center(
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: themeProvider.accentColor,
+                                ),
+                              ),
+                            ),
+                        errorWidget:
+                            (context, url, error) => Container(
+                              width:
+                                  (MediaQuery.of(context).size.width - 32) / 2 -
+                                  12,
+                              height: 100,
+                              color: themeProvider.cardColor,
+                              child: const Icon(Icons.broken_image),
+                            ),
+                      ),
+                    ),
+                    if (isLastSeen)
+                      Positioned(
+                        top: 8,
+                        right: 8,
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 3,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.black54.withOpacity(
+                              themeProvider.isDarkMode ? 0.7 : 0.5,
+                            ),
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: const Text(
+                            "So'nggi ko'rilgan",
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.w500,
+                            ),
                           ),
                         ),
                       ),
-          );
-        },
+                  ],
+                ),
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(top: 4.0, right: 8.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  episode['name_uz'] ?? "Qism ${index + 1}",
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: themeProvider.textColor,
+                  ),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                if (episode['duration'] != null)
+                  Text(
+                    _formatDuration(episode['duration']),
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: themeProvider.subTextColor,
+                    ),
+                  ),
+                const SizedBox(height: 6),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -466,313 +1467,89 @@ class FilmScreen extends StatelessWidget {
     final hours = twoDigits(duration.inHours);
     final minutes = twoDigits(duration.inMinutes.remainder(60));
     final secs = twoDigits(duration.inSeconds.remainder(60));
-    return duration.inHours > 0 ? '$hours:$minutes:$secs' : '$minutes:$secs';
-  }
 
-  String _getGenresText(List<dynamic> genres) => genres.isEmpty
-      ? "Noma'lum" // S.current.unknown o‘rniga
-      : genres.map((g) => g['name_uz'] ?? "Noma'lum").join(', ');
-}
-
-class FilmBloc extends Bloc<FilmEvent, FilmState> {
-  final ApiService apiService;
-  final ScrollController scrollController = ScrollController();
-
-  FilmBloc(this.apiService) : super(FilmState.initial()) {
-    scrollController.addListener(_onScroll);
-
-    on<FetchFilmDetailsEvent>((event, emit) async {
-      emit(state.copyWith(isLoading: true));
-      try {
-        final filmData = await apiService.getFilmDetails(event.filmId);
-        emit(
-          state.copyWith(
-            film: filmData,
-            isLoading: false,
-            isSerial: filmData['type']?['name_uz'] == "Serial",
-          ),
-        );
-        if (state.isSerial && filmData['season_count'] != null) {
-          final seasonsData = await apiService.getSeasons(event.filmId);
-          final seasonMapping = {
-            for (var i = 0; i < seasonsData.length; i++)
-              i + 1: seasonsData[i]['season_id'] as int?,
-          };
-          emit(state.copyWith(seasonMapping: seasonMapping, selectedSeason: 1));
-          add(FetchEpisodesEvent(clearExisting: true));
-        }
-      } catch (e) {
-        emit(state.copyWith(isLoading: false));
-      }
-    });
-
-    on<SelectSeasonEvent>((event, emit) async {
-      emit(state.copyWith(selectedSeason: event.season));
-      add(FetchEpisodesEvent(clearExisting: true));
-    });
-
-    on<FetchEpisodesEvent>((event, emit) async {
-      if (state.selectedSeason == null || state.isLoadingMore) return;
-      emit(
-        state.copyWith(
-          isLoadingMore: true,
-          episodes: event.clearExisting ? [] : state.episodes,
-        ),
-      );
-      try {
-        final effectiveSeason = state.seasonMapping[state.selectedSeason];
-        if (effectiveSeason != null) {
-          final episodeData = await apiService.getEpisodes(
-            state.film!['id'],
-            effectiveSeason,
-            page: state.page,
-            perPage: 20,
-          );
-          final newEpisodes = episodeData
-              .where(
-                (e) => !state.episodes.any((existing) => existing['id'] == e['id']),
-              )
-              .toList();
-          emit(
-            state.copyWith(
-              episodes:
-                  event.clearExisting ? newEpisodes : [...state.episodes, ...newEpisodes],
-              page: event.clearExisting ? 2 : state.page + 1,
-              isLoadingMore: false,
-              hasMoreEpisodes: episodeData.length == 20,
-            ),
-          );
-        } else {
-          emit(
-            state.copyWith(
-              episodes: [],
-              isLoadingMore: false,
-              hasMoreEpisodes: false,
-            ),
-          );
-        }
-      } catch (e) {
-        emit(state.copyWith(isLoadingMore: false));
-      }
-    });
-
-    on<PlayVideoEvent>((event, emit) async {
-      final validUrl = await _getValidStreamUrl(event.url);
-      if (validUrl.isNotEmpty) {
-        Navigator.push(
-          event.context,
-          MaterialPageRoute(
-            builder: (_) => VideoPlayerScreen(videoUrl: validUrl, title: event.title),
-          ),
-        );
-      }
-    });
-  }
-
-  void _onScroll() {
-    if (scrollController.position.pixels >=
-            scrollController.position.maxScrollExtent - 100 &&
-        !state.isLoadingMore &&
-        state.hasMoreEpisodes &&
-        state.isSerial) {
-      add(FetchEpisodesEvent());
+    if (duration.inHours > 0) {
+      return '$hours:$minutes:$secs';
+    } else {
+      return '$minutes:$secs';
     }
   }
-
-  Future<String> _getValidStreamUrl(String initialUrl) async {
-    try {
-      final response = await apiService.checkUrlValidity(initialUrl);
-      if (response['isValid'] == true) return initialUrl;
-    } catch (e) {}
-    try {
-      final updatedFilmData = await apiService.getFilmDetails(state.film!['id']);
-      final newUrl =
-          updatedFilmData['lastSeries']?[0]?['track']?[0]?['stream_url'] ?? '';
-      emit(state.copyWith(film: updatedFilmData));
-      return newUrl;
-    } catch (e) {
-      return initialUrl;
-    }
-  }
-
-  @override
-  Future<void> close() {
-    scrollController.dispose();
-    return super.close();
-  }
 }
 
-sealed class FilmEvent {
-  BuildContext get context => BuildContext();
-}
+/// One person in the cast strip. Directors are rendered the same way but
+/// without a tap target, since there is no per-director listing endpoint.
+class _CastTile extends StatelessWidget {
+  final String name;
+  final String role;
+  final String? photoUrl;
+  final ThemeProvider themeProvider;
+  final VoidCallback? onTap;
 
-class FetchFilmDetailsEvent extends FilmEvent {
-  final int filmId;
-  FetchFilmDetailsEvent(this.filmId);
-}
-
-class SelectSeasonEvent extends FilmEvent {
-  final int season;
-  SelectSeasonEvent(this.season);
-}
-
-class FetchEpisodesEvent extends FilmEvent {
-  final bool clearExisting;
-  FetchEpisodesEvent({this.clearExisting = false});
-}
-
-class PlayVideoEvent extends FilmEvent {
-  final String url;
-  final String title;
-  @override
-  final BuildContext context;
-
-  PlayVideoEvent(this.url, this.title, {this.context = const BuildContext()});
-}
-
-class FilmState {
-  final Map<String, dynamic>? film;
-  final List<dynamic> episodes;
-  final int? selectedSeason;
-  final Map<int, int?> seasonMapping;
-  final bool isLoading;
-  final bool isLoadingMore;
-  final bool hasMoreEpisodes;
-  final int page;
-  final bool isSerial;
-
-  FilmState({
-    this.film,
-    required this.episodes,
-    this.selectedSeason,
-    required this.seasonMapping,
-    required this.isLoading,
-    required this.isLoadingMore,
-    required this.hasMoreEpisodes,
-    required this.page,
-    required this.isSerial,
+  const _CastTile({
+    required this.name,
+    required this.role,
+    required this.photoUrl,
+    required this.themeProvider,
+    this.onTap,
   });
-
-  factory FilmState.initial() => FilmState(
-        episodes: [],
-        seasonMapping: {},
-        isLoading: true,
-        isLoadingMore: false,
-        hasMoreEpisodes: true,
-        page: 1,
-        isSerial: false,
-      );
-
-  FilmState copyWith({
-    Map<String, dynamic>? film,
-    List<dynamic>? episodes,
-    int? selectedSeason,
-    Map<int, int?>? seasonMapping,
-    bool? isLoading,
-    bool? isLoadingMore,
-    bool? hasMoreEpisodes,
-    int? page,
-    bool? isSerial,
-  }) =>
-      FilmState(
-        film: film ?? this.film,
-        episodes: episodes ?? this.episodes,
-        selectedSeason: selectedSeason ?? this.selectedSeason,
-        seasonMapping: seasonMapping ?? this.seasonMapping,
-        isLoading: isLoading ?? this.isLoading,
-        isLoadingMore: isLoadingMore ?? this.isLoadingMore,
-        hasMoreEpisodes: hasMoreEpisodes ?? this.hasMoreEpisodes,
-        page: page ?? this.page,
-        isSerial: isSerial ?? this.isSerial,
-      );
-}
-
-class VideoPlayerScreen extends StatefulWidget {
-  final String videoUrl;
-  final String title;
-
-  const VideoPlayerScreen({
-    required this.videoUrl,
-    required this.title,
-    super.key,
-  });
-
-  @override
-  State<VideoPlayerScreen> createState() => _VideoPlayerScreenState();
-}
-
-class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
-  late BetterPlayerController _betterPlayerController;
-  bool _isDisposed = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _initializePlayer();
-    WakelockPlus.enable();
-  }
-
-  void _initializePlayer() {
-    _betterPlayerController = BetterPlayerController(
-      BetterPlayerConfiguration(
-        autoPlay: true,
-        fit: BoxFit.contain,
-        fullScreenByDefault: true,
-        controlsConfiguration: const BetterPlayerControlsConfiguration(
-          enableFullscreen: true,
-          enablePlayPause: true,
-          enableMute: true,
-          enableProgressText: true,
-          enableSkips: true,
-          enableQualities: true,
-          enableAudioTracks: true,
-        ),
-      ),
-      betterPlayerDataSource: BetterPlayerDataSource(
-        BetterPlayerDataSourceType.network,
-        widget.videoUrl,
-        resolutions: widget.videoUrl.endsWith('.m3u8') ? null : {"SD": widget.videoUrl},
-        notificationConfiguration: const BetterPlayerNotificationConfiguration(
-          showNotification: false,
-        ),
-      ),
-    );
-  }
-
-  @override
-  void dispose() {
-    if (!_isDisposed) {
-      _betterPlayerController.dispose();
-      _isDisposed = true;
-    }
-    WakelockPlus.disable();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
-    final themeProvider = context.watch<ThemeProvider>();
-    return Scaffold(
-      backgroundColor:
-          themeProvider.isDarkMode ? const Color(0xFF111827) : Colors.grey[100],
-      appBar: AppBar(
-        backgroundColor:
-            themeProvider.isDarkMode ? const Color(0xFF1F2937) : Colors.white,
-        elevation: 2,
-        leading: IconButton(
-          icon: const Icon(Icons.chevron_left, color: Colors.white, size: 30),
-          onPressed: () => Navigator.of(context).pop(),
-        ),
-        title: Text(
-          widget.title,
-          style: TextStyle(
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-            color: themeProvider.isDarkMode ? Colors.white : Colors.black87,
-          ),
+    final url = photoUrl;
+
+    return SizedBox(
+      width: 84,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(42),
+        child: Column(
+          children: [
+            ClipOval(
+              child: SizedBox(
+                width: 72,
+                height: 72,
+                child:
+                    url == null || url.isEmpty
+                        ? Container(
+                          color: themeProvider.cardColor,
+                          child: Icon(
+                            Icons.person,
+                            color: themeProvider.subTextColor,
+                          ),
+                        )
+                        : CachedNetworkImage(
+                          imageUrl: url,
+                          cacheManager: filmImagesCacheManager,
+                          fit: BoxFit.cover,
+                          placeholder:
+                              (_, __) =>
+                                  Container(color: themeProvider.cardColor),
+                          errorWidget:
+                              (_, __, ___) => Container(
+                                color: themeProvider.cardColor,
+                                child: Icon(
+                                  Icons.person,
+                                  color: themeProvider.subTextColor,
+                                ),
+                              ),
+                        ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              name,
+              maxLines: 2,
+              textAlign: TextAlign.center,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 11, color: themeProvider.textColor),
+            ),
+            Text(
+              role,
+              style: TextStyle(fontSize: 10, color: themeProvider.subTextColor),
+            ),
+          ],
         ),
       ),
-      body: BetterPlayer(controller: _betterPlayerController),
     );
   }
 }

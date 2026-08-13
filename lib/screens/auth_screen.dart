@@ -1,11 +1,13 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
-import 'package:riya_play/blocs/auth/auth_bloc.dart';
+import 'package:riya_play/services/api_service.dart';
 import 'package:riya_play/main.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sms_autofill/sms_autofill.dart';
+import 'phone_number_formatter.dart';
+import 'package:riya_play/utils/navigation.dart';
+import 'package:riya_play/utils/app_logger.dart';
 
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
@@ -23,290 +25,266 @@ class _AuthScreenState extends State<AuthScreen> {
   final _fullNameController = TextEditingController();
   final _usernameController = TextEditingController();
   DateTime? _selectedBirthDate;
+  bool _isLoginMode = true;
+  bool _isCodeSent = false;
+  bool _isLoading = false;
+  String? _error;
   int? _selectedGender;
+  int _remainingSeconds = 60;
+  Timer? _timer;
+  bool _canResend = false;
 
-  @override
-  void initState() {
-    super.initState();
-    _phoneController.addListener(_formatPhoneNumber);
+  void _startTimer() {
+    _remainingSeconds = 60;
+    _canResend = false;
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (_remainingSeconds > 0) {
+        setState(() => _remainingSeconds--);
+      } else {
+        setState(() {
+          _canResend = true;
+          timer.cancel();
+        });
+      }
+    });
   }
 
-  void _formatPhoneNumber() {
-    String text = _phoneController.text.replaceAll(RegExp(r'[^0-9]'), '');
-    if (text.length > 9) text = text.substring(0, 9);
-    String formatted = '';
-    if (text.isNotEmpty) {
-      if (text.length >= 2) {
-        formatted += '(${text.substring(0, 2)})';
-        if (text.length > 2) {
-          formatted += text.substring(2, text.length > 5 ? 5 : text.length);
-          if (text.length > 5)
-            formatted +=
-                '-${text.substring(5, text.length > 7 ? 7 : text.length)}';
-          if (text.length > 7) formatted += '-${text.substring(7)}';
-        }
-      } else {
-        formatted += '(${text}';
-      }
-    }
-    if (formatted != _phoneController.text) {
-      _phoneController.value = _phoneController.value.copyWith(
-        text: formatted,
-        selection: TextSelection.collapsed(offset: formatted.length),
-      );
+  String _formatDateTime(int? timestamp) {
+    if (timestamp == null) return "Noma'lum";
+    try {
+      final dateTime = DateTime.fromMillisecondsSinceEpoch(timestamp * 1000);
+      return DateFormat('dd.MM.yyyy HH:mm').format(dateTime);
+    } catch (e) {
+      return "Noma'lum";
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    return BlocListener<AuthBloc, AuthState>(
-      listener: (context, state) {
-        if (state is AuthSuccess) {
-          Navigator.pushReplacement(
-            context,
-            MaterialPageRoute(builder: (_) => const MainScreen()),
-          );
-        }
-        if (state is AuthDeviceSelection) {
-          _showDeviceSelectionDialog(state.devices);
-        }
-      },
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text(
-            context.watch<AuthBloc>().state is AuthRegister
-                ? "Ro'yxatdan o'tish"
-                : "Kirish",
-            style: const TextStyle(color: Colors.white),
+    // Oldingi build metodi o'zgarishsiz qoladi
+    return Scaffold(
+      body: Stack(
+        children: [
+          Container(
+            decoration: const BoxDecoration(
+              image: DecorationImage(
+                image: AssetImage('assets/images/background.png'),
+                fit: BoxFit.cover,
+                opacity: 0.3,
+              ),
+            ),
           ),
-          elevation: 0,
-          backgroundColor: Colors.transparent,
-          flexibleSpace: Container(
+          Container(
             decoration: BoxDecoration(
               gradient: LinearGradient(
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
-                colors: [Colors.blue.shade400, Colors.blue.shade900],
+                colors: [
+                  Colors.black.withValues(alpha: 0.3),
+                  Colors.black.withValues(alpha: 1.0),
+                ],
               ),
             ),
           ),
-        ),
-        body: Container(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [Colors.blue.shade300, Colors.blue.shade800],
-            ),
-          ),
-          child: Center(
-            child: Padding(
-              padding: const EdgeInsets.all(16.0),
-              child: SingleChildScrollView(
-                child: Card(
-                  elevation: 12,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(20),
+          Center(
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 50, bottom: 30),
+                    child: Image.asset('assets/images/logo.png', height: 80),
                   ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(24.0),
-                    child: BlocBuilder<AuthBloc, AuthState>(
-                      builder: (context, state) {
-                        final isLoginMode = state is! AuthRegister;
-                        final isCodeSent =
-                            state is AuthCodeSent ||
-                            state is AuthDeviceSelection;
-
-                        return Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Text(
-                              isLoginMode
-                                  ? "Telefon orqali kirish"
-                                  : "Ro'yxatdan o'tish",
-                              style: Theme.of(
-                                context,
-                              ).textTheme.headlineSmall?.copyWith(
-                                fontWeight: FontWeight.bold,
-                                color: Colors.blue.shade900,
-                              ),
-                            ),
-                            const SizedBox(height: 24),
-                            if (isCodeSent) _buildCodeInputFields(context),
-                            if (!isCodeSent) ...[
-                              _buildPhoneField(context),
-                              if (!isLoginMode) ...[
-                                const SizedBox(height: 20),
-                                _buildTextField(
-                                  controller: _fullNameController,
-                                  label: "To'liq ism",
-                                ),
-                                const SizedBox(height: 20),
-                                _buildTextField(
-                                  controller: _usernameController,
-                                  label: "Foydalanuvchi nomi",
-                                ),
-                                const SizedBox(height: 20),
-                                _buildDatePicker(context),
-                                const SizedBox(height: 20),
-                                _buildGenderDropdown(context),
-                              ],
-                            ],
-                            if (state is AuthError) ...[
-                              const SizedBox(height: 12),
-                              Text(
-                                state.message,
-                                style: const TextStyle(
-                                  color: Colors.redAccent,
-                                  fontSize: 14,
-                                ),
-                              ),
-                            ],
-                            const SizedBox(height: 24),
-                            ElevatedButton(
-                              onPressed:
-                                  state is AuthLoading
-                                      ? null
-                                      : () => _handleAction(
-                                        context,
-                                        isCodeSent,
-                                        isLoginMode,
-                                      ),
-                              style: ElevatedButton.styleFrom(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 48,
-                                  vertical: 16,
-                                ),
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(12),
-                                ),
-                                backgroundColor: Colors.blue.shade700,
-                                elevation: 6,
-                              ),
-                              child:
-                                  state is AuthLoading
-                                      ? const SizedBox(
-                                        width: 24,
-                                        height: 24,
-                                        child: CircularProgressIndicator(
-                                          strokeWidth: 2,
-                                          color: Colors.white,
-                                        ),
-                                      )
-                                      : Text(
-                                        isCodeSent
-                                            ? "Tasdiqlash"
-                                            : "Kodni yuborish",
-                                        style: const TextStyle(
-                                          fontSize: 16,
-                                          color: Colors.white,
-                                        ),
-                                      ),
-                            ),
-                            const SizedBox(height: 20),
-                            if (!isCodeSent)
-                              TextButton(
-                                onPressed:
-                                    state is AuthLoading
-                                        ? null
-                                        : () => context.read<AuthBloc>().add(
-                                          ToggleAuthModeEvent(),
-                                        ),
-                                child: Text(
-                                  isLoginMode
-                                      ? "Ro'yxatdan o'tmoqchimisiz?"
-                                      : "Kirishni xohlaysizmi?",
-                                  style: TextStyle(
-                                    color: Colors.blue.shade700,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
-                          ],
-                        );
-                      },
+                  Text(
+                    _isCodeSent ? "Kodni kiriting" : "Raqamingizni kiriting",
+                    style: const TextStyle(
+                      fontSize: 24,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
                     ),
                   ),
-                ),
+                  const SizedBox(height: 30),
+                  if (_isCodeSent) ...[
+                    _buildCodeInputFields(),
+                  ] else if (_isLoginMode) ...[
+                    _buildPhoneField(),
+                  ] else ...[
+                    _buildPhoneField(),
+                    const SizedBox(height: 20),
+                    _buildTextField(
+                      controller: _fullNameController,
+                      label: "To‘liq ism",
+                    ),
+                    const SizedBox(height: 20),
+                    _buildTextField(
+                      controller: _usernameController,
+                      label: "Foydalanuvchi nomi",
+                    ),
+                    const SizedBox(height: 20),
+                    _buildDatePicker(),
+                    const SizedBox(height: 20),
+                    _buildGenderDropdown(),
+                  ],
+                  if (_error != null) ...[
+                    const SizedBox(height: 12),
+                    Text(
+                      _error!,
+                      style: const TextStyle(
+                        color: Colors.redAccent,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ],
+                  const SizedBox(height: 24),
+                  ElevatedButton(
+                    onPressed:
+                        _isLoading ||
+                                (_isCodeSent &&
+                                    !_canResend &&
+                                    _remainingSeconds > 0)
+                            ? null
+                            : _handleAction,
+                    style: ElevatedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 48,
+                        vertical: 16,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      backgroundColor: const Color(0xFFE91E63),
+                      elevation: 6,
+                    ),
+                    child:
+                        _isLoading
+                            ? const SizedBox(
+                              width: 24,
+                              height: 24,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                            : Text(
+                              _isCodeSent
+                                  ? "Tasdiqlash ($_remainingSeconds)"
+                                  : _canResend
+                                  ? "Qayta yuborish"
+                                  : "Yuborish",
+                              style: const TextStyle(
+                                fontSize: 16,
+                                color: Colors.white,
+                              ),
+                            ),
+                  ),
+                  const SizedBox(height: 20),
+                  if (!_isCodeSent)
+                    TextButton(
+                      onPressed:
+                          _isLoading
+                              ? null
+                              : () => setState(() {
+                                _isLoginMode = !_isLoginMode;
+                                _resetFields();
+                              }),
+                      child: Text(
+                        _isLoginMode
+                            ? "Ro‘yxatdan o‘tishni xohlaysizmi?"
+                            : "Kirishni xohlaysizmi?",
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
           ),
-        ),
+        ],
       ),
     );
   }
 
-  Widget _buildPhoneField(BuildContext context) {
-    return TextField(
-      controller: _phoneController,
-      decoration: InputDecoration(
-        labelText: "Telefon",
-        prefixText: "+998 ",
-        prefixStyle: const TextStyle(
-          fontWeight: FontWeight.bold,
-          color: Colors.blue,
+  Widget _buildPhoneField() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 32),
+      child: TextField(
+        controller: _phoneController,
+        decoration: InputDecoration(
+          prefixIcon: const Icon(Icons.phone, color: Colors.white),
+          prefixText: "+998 ",
+          prefixStyle: const TextStyle(
+            fontWeight: FontWeight.bold,
+            color: Colors.white,
+          ),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+          filled: true,
+          fillColor: Colors.black.withValues(alpha: 0.5),
+          contentPadding: const EdgeInsets.symmetric(
+            vertical: 16,
+            horizontal: 16,
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Colors.white, width: 2),
+          ),
         ),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-        filled: true,
-        fillColor: Colors.white,
-        contentPadding: const EdgeInsets.symmetric(
-          vertical: 16,
-          horizontal: 16,
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: Colors.blue.shade200),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: Colors.blue.shade700, width: 2),
-        ),
+        style: const TextStyle(color: Colors.white),
+        keyboardType: TextInputType.number,
+        inputFormatters: [PhoneNumberFormatter()],
+        enabled: !_isLoading,
       ),
-      keyboardType: TextInputType.number,
-      inputFormatters: [
-        FilteringTextInputFormatter.digitsOnly,
-        LengthLimitingTextInputFormatter(9),
-      ],
-      enabled: context.watch<AuthBloc>().state is! AuthLoading,
     );
   }
 
-  Widget _buildCodeInputFields(BuildContext context) {
+  Widget _buildCodeInputFields() {
     return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      mainAxisAlignment: MainAxisAlignment.center,
       children: List.generate(4, (index) {
-        return SizedBox(
-          width: 60,
-          child: TextField(
-            controller: _codeControllers[index],
-            decoration: InputDecoration(
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
+        return Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: SizedBox(
+            width: 50,
+            child: TextField(
+              controller: _codeControllers[index],
+              decoration: InputDecoration(
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                filled: true,
+                fillColor: Colors.black.withValues(alpha: 0.5),
+                counterText: "",
+                contentPadding: const EdgeInsets.symmetric(vertical: 16),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: BorderSide(
+                    color: Colors.white.withValues(alpha: 0.3),
+                  ),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  borderSide: const BorderSide(color: Colors.white, width: 2),
+                ),
               ),
-              filled: true,
-              fillColor: Colors.white,
-              counterText: "",
-              contentPadding: const EdgeInsets.symmetric(vertical: 16),
-              enabledBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: Colors.blue.shade200),
-              ),
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: Colors.blue.shade700, width: 2),
-              ),
+              style: const TextStyle(color: Colors.white),
+              keyboardType: TextInputType.number,
+              textAlign: TextAlign.center,
+              maxLength: 1,
+              obscureText: true,
+              obscuringCharacter: '*',
+              onChanged: (value) {
+                if (value.isNotEmpty && index < 3) {
+                  FocusScope.of(context).nextFocus();
+                }
+                if (index == 3 && value.isNotEmpty) _confirmCode();
+              },
             ),
-            keyboardType: TextInputType.number,
-            textAlign: TextAlign.center,
-            maxLength: 1,
-            onChanged: (value) {
-              if (value.isNotEmpty && index < 3) {
-                FocusScope.of(context).nextFocus();
-              }
-              if (index == 3 && value.isNotEmpty) {
-                _confirmCode(context);
-              }
-            },
           ),
         );
       }),
@@ -317,121 +295,166 @@ class _AuthScreenState extends State<AuthScreen> {
     required TextEditingController controller,
     required String label,
   }) {
-    return TextField(
-      controller: controller,
-      decoration: InputDecoration(
-        labelText: label,
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-        filled: true,
-        fillColor: Colors.white,
-        contentPadding: const EdgeInsets.symmetric(
-          vertical: 16,
-          horizontal: 16,
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 32),
+      child: TextField(
+        controller: controller,
+        decoration: InputDecoration(
+          labelText: label,
+          labelStyle: const TextStyle(color: Colors.white70),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+          filled: true,
+          fillColor: Colors.black.withValues(alpha: 0.5),
+          contentPadding: const EdgeInsets.symmetric(
+            vertical: 16,
+            horizontal: 16,
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Colors.white, width: 2),
+          ),
         ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: Colors.blue.shade200),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: Colors.blue.shade700, width: 2),
-        ),
+        style: const TextStyle(color: Colors.white),
+        enabled: !_isLoading,
       ),
-      enabled: context.watch<AuthBloc>().state is! AuthLoading,
     );
   }
 
-  Widget _buildDatePicker(BuildContext context) {
-    return TextField(
-      readOnly: true,
-      decoration: InputDecoration(
-        labelText: "Tug'ilgan sana",
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-        filled: true,
-        fillColor: Colors.white,
-        hintText:
-            _selectedBirthDate == null
-                ? "Sanani tanlang"
-                : DateFormat('dd.MM.yyyy').format(_selectedBirthDate!),
-        contentPadding: const EdgeInsets.symmetric(
-          vertical: 16,
-          horizontal: 16,
-        ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: Colors.blue.shade200),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: Colors.blue.shade700, width: 2),
+  Widget _buildDatePicker() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 32),
+      child: InkWell(
+        onTap: () async {
+          final pickedDate = await showDatePicker(
+            context: context,
+            initialDate: _selectedBirthDate ?? DateTime.now(),
+            firstDate: DateTime(1900),
+            lastDate: DateTime.now(),
+            builder: (context, child) {
+              return Theme(
+                data: ThemeData.dark().copyWith(
+                  colorScheme: const ColorScheme.dark(
+                    primary: Color(0xFFE91E63),
+                    onPrimary: Colors.white,
+                    surface: Colors.black,
+                    onSurface: Colors.white,
+                  ),
+                  dialogTheme: const DialogThemeData(backgroundColor: Colors.black),
+                ),
+                child: child!,
+              );
+            },
+          );
+          if (pickedDate != null) {
+            setState(() => _selectedBirthDate = pickedDate);
+          }
+        },
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
+          decoration: BoxDecoration(
+            border: Border.all(color: Colors.white.withValues(alpha: 0.3)),
+            borderRadius: BorderRadius.circular(12),
+            color: Colors.black.withValues(alpha: 0.5),
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                _selectedBirthDate == null
+                    ? "Tug‘ilgan sanani tanlang"
+                    : DateFormat('dd MMMM yyyy').format(_selectedBirthDate!),
+                style: TextStyle(
+                  color:
+                      _selectedBirthDate == null
+                          ? Colors.white70
+                          : Colors.white,
+                  fontSize: 16,
+                ),
+              ),
+              const Icon(Icons.calendar_today, color: Colors.white),
+            ],
+          ),
         ),
       ),
-      onTap: () async {
-        final pickedDate = await showDatePicker(
-          context: context,
-          initialDate: DateTime.now(),
-          firstDate: DateTime(1900),
-          lastDate: DateTime.now(),
-        );
-        if (pickedDate != null) setState(() => _selectedBirthDate = pickedDate);
-      },
     );
   }
 
-  Widget _buildGenderDropdown(BuildContext context) {
-    return DropdownButtonFormField<int>(
-      value: _selectedGender,
-      decoration: InputDecoration(
-        labelText: "Jins",
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-        filled: true,
-        fillColor: Colors.white,
-        contentPadding: const EdgeInsets.symmetric(
-          vertical: 16,
-          horizontal: 16,
+  Widget _buildGenderDropdown() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 32),
+      child: DropdownButtonFormField<int>(
+        value: _selectedGender,
+        decoration: InputDecoration(
+          labelText: "Jins",
+          labelStyle: const TextStyle(color: Colors.white70),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+          filled: true,
+          fillColor: Colors.black.withValues(alpha: 0.5),
+          contentPadding: const EdgeInsets.symmetric(
+            vertical: 16,
+            horizontal: 16,
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(12),
+            borderSide: const BorderSide(color: Colors.white, width: 2),
+          ),
         ),
-        enabledBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: Colors.blue.shade200),
-        ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: Colors.blue.shade700, width: 2),
-        ),
+        style: const TextStyle(color: Colors.white),
+        dropdownColor: Colors.black,
+        items: const [
+          DropdownMenuItem(value: 1, child: Text("Erkak")),
+          DropdownMenuItem(value: 0, child: Text("Ayol")),
+        ],
+        onChanged:
+            _isLoading
+                ? null
+                : (value) => setState(() => _selectedGender = value),
       ),
-      items: [
-        DropdownMenuItem(value: 1, child: Text("Erkak")),
-        DropdownMenuItem(value: 0, child: Text("Ayol")),
-      ],
-      onChanged:
-          context.watch<AuthBloc>().state is AuthLoading
-              ? null
-              : (value) => setState(() => _selectedGender = value),
     );
   }
 
-  void _handleAction(BuildContext context, bool isCodeSent, bool isLoginMode) {
-    if (isCodeSent) {
-      _confirmCode(context);
+  Future<void> _handleAction() async {
+    if (_isCodeSent) {
+      await _confirmCode();
     } else {
-      final rawPhone = _phoneController.text.replaceAll(RegExp(r'[^0-9]'), '');
-      final phone = "998$rawPhone";
-      if (rawPhone.length != 9) {
-        context.read<AuthBloc>().add(AuthErrorEvent("To‘liq raqam kiriting"));
-        return;
-      }
-      context.read<AuthBloc>().add(SendPhoneEvent(phone));
-      _listenForSms();
+      await _sendPhone();
     }
   }
 
-  void _confirmCode(BuildContext context) {
-    final code = _codeControllers.map((c) => c.text).join();
-    if (code.length != 4) {
-      context.read<AuthBloc>().add(AuthErrorEvent("To‘liq kod kiriting"));
+  Future<void> _sendPhone() async {
+    final rawPhone = _phoneController.text.replaceAll(RegExp(r'[^0-9]'), '');
+    final phone = "998$rawPhone";
+    if (rawPhone.length != 9) {
+      setState(() => _error = "To‘liq raqam kiriting");
       return;
     }
-    context.read<AuthBloc>().add(ConfirmCodeEvent(code));
+
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    final result = await ApiService.sendPhone(phone);
+
+    if (!mounted) return;
+
+    setState(() => _isLoading = false);
+
+    if (result) {
+      setState(() => _isCodeSent = true);
+      _startTimer();
+      _listenForSms();
+    } else {
+      setState(() => _error = "SMS yuborishda xatolik yuz berdi");
+    }
   }
 
   void _listenForSms() {
@@ -439,19 +462,57 @@ class _AuthScreenState extends State<AuthScreen> {
     SmsAutoFill()
         .listenForCode()
         .then((_) {
-          debugPrint("SMS tinglash boshlandi");
+          appLogger.d("SMS tinglash boshlandi");
         })
         .catchError((error) {
-          debugPrint("SMS tinglashda xato: $error");
+          appLogger.d("SMS tinglashda xato: $error");
         });
+
     SmsAutoFill().code.listen((code) {
+      appLogger.d("SMSdan olingan kod: $code");
       if (code.length == 4) {
         setState(() {
-          for (int i = 0; i < 4; i++) _codeControllers[i].text = code[i];
+          for (int i = 0; i < 4; i++) {
+            _codeControllers[i].text = code[i];
+          }
         });
-        _confirmCode(context);
+        appLogger.d("Kod joylashtirildi: $code");
+        _confirmCode();
+      } else {
+        appLogger.d("Kod noto‘g‘ri uzunlikda yoki null: $code");
       }
     });
+  }
+
+  Future<void> _confirmCode() async {
+    final code = _codeControllers.map((c) => c.text).join();
+    if (code.length != 4) {
+      setState(() => _error = "To‘liq kod kiriting");
+      return;
+    }
+
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    final result = await ApiService.confirmSms(code);
+
+    if (!mounted) return;
+
+    setState(() => _isLoading = false);
+
+    if (result['success']) {
+      if (_isLoginMode) {
+        _navigateToMainScreen();
+      } else {
+        await _registerUser();
+      }
+    } else if (result.containsKey('devices')) {
+      _showDeviceSelectionDialog(result['devices']);
+    } else {
+      setState(() => _error = result['message'] ?? "Kod tasdiqlashda xatolik");
+    }
   }
 
   Future<void> _showDeviceSelectionDialog(List<dynamic> devices) async {
@@ -462,56 +523,176 @@ class _AuthScreenState extends State<AuthScreen> {
             shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(16),
             ),
-            title: Text("Bir nechta qurilma topildi"),
+            backgroundColor: Colors.black,
+            title: const Text(
+              "Bir nechta qurilma topildi",
+              style: TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
             content: Column(
               mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text("Bitta qurilmani tanlang"),
-                const SizedBox(height: 10),
-                ...devices.map(
-                  (device) => ListTile(
-                    title: Text(device['device_name']),
-                    subtitle: Text("ID: ${device['id']}"),
-                    onTap: () {
-                      Navigator.pop(context);
-                      final code = _codeControllers.map((c) => c.text).join();
-                      context.read<AuthBloc>().add(
-                        SelectDeviceEvent(code, device['id'].toString()),
-                      );
-                    },
-                  ),
+                const Text(
+                  "Bitta qurilmani o‘chirib, davom eting:",
+                  style: TextStyle(color: Colors.white70),
                 ),
+                const SizedBox(height: 10),
+                ...devices.map((device) {
+                  final deviceId = device['id']?.toString() ?? "ID yo‘q";
+                  return ListTile(
+                    contentPadding: const EdgeInsets.symmetric(vertical: 4),
+                    title: Text(
+                      device['device_name'] ?? "Noma'lum qurilma",
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 16,
+                      ),
+                    ),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          "Qurilma ID: $deviceId",
+                          style: const TextStyle(
+                            color: Colors.grey,
+                            fontSize: 12,
+                          ),
+                        ),
+                        Text(
+                          "Kirish vaqti: ${_formatDateTime(device['created_at'])}",
+                          style: const TextStyle(
+                            color: Colors.grey,
+                            fontSize: 12,
+                          ),
+                        ),
+                        Text(
+                          "IP: ${device['user_ip'] ?? 'Noma\'lum'}",
+                          style: const TextStyle(
+                            color: Colors.grey,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
+                    ),
+                    trailing: GestureDetector(
+                      onTap: () async {
+                        Navigator.pop(context);
+                        setState(() => _isLoading = true);
+
+                        appLogger.d("O‘chirilayotgan qurilma ID: $deviceId");
+                        // kickDevice() o‘rniga confirmSms() ga token_id bilan so‘rov
+                        final confirmResult = await ApiService.confirmSms(
+                          _codeControllers.map((c) => c.text).join(),
+                          tokenId: deviceId,
+                        );
+                        appLogger.d("confirmSms result: $confirmResult");
+
+                        setState(() => _isLoading = false);
+                        if (confirmResult['success']) {
+                          if (_isLoginMode) {
+                            _navigateToMainScreen();
+                          } else {
+                            await _registerUser();
+                          }
+                        } else {
+                          setState(() {
+                            _error =
+                                confirmResult['message'] ??
+                                "Qurilma o‘chirishda xatolik";
+                          });
+                        }
+                      },
+                      child: const Icon(
+                        Icons.delete,
+                        color: Colors.red,
+                        size: 24,
+                      ),
+                    ),
+                  );
+                }).toList(),
               ],
             ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text(
+                  "Bekor qilish",
+                  style: TextStyle(color: Colors.white70),
+                ),
+              ),
+            ],
           ),
     );
   }
 
-  void _registerUser(BuildContext context) {
+  Future<void> _registerUser() async {
     final fullName = _fullNameController.text;
     final username = _usernameController.text;
     if (fullName.isEmpty ||
         username.isEmpty ||
         _selectedBirthDate == null ||
         _selectedGender == null) {
-      context.read<AuthBloc>().add(
-        AuthErrorEvent("Barcha maydonlarni to‘ldiring"),
-      );
+      setState(() => _error = "Barcha maydonlarni to‘ldiring");
       return;
     }
-    final birthDateUnix = _selectedBirthDate!.millisecondsSinceEpoch ~/ 1000;
-    context.read<AuthBloc>().add(
-      RegisterUserEvent(fullName, username, birthDateUnix, _selectedGender!),
+
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
+    final prefs = await SharedPreferences.getInstance();
+    final token = prefs.getString('auth_token') ?? '';
+    final birthDateUnix = (_selectedBirthDate!.millisecondsSinceEpoch ~/ 1000);
+
+    final result = await ApiService.updateUser(
+      fullName: fullName,
+      username: username,
+      birthDate: birthDateUnix,
+      sex: _selectedGender!,
+      token: token,
     );
+
+    if (!mounted) return;
+
+    setState(() => _isLoading = false);
+
+    if (result) {
+      _navigateToMainScreen();
+    } else {
+      setState(() => _error = "Ro‘yxatdan o‘tishda xatolik yuz berdi");
+    }
+  }
+
+  void _navigateToMainScreen() {
+    Navigator.pushReplacement(context, createSlideRoute(const MainScreen()));
+  }
+
+  void _resetFields() {
+    _error = null;
+    _phoneController.clear();
+    for (var controller in _codeControllers) controller.clear();
+    _fullNameController.clear();
+    _usernameController.clear();
+    _selectedBirthDate = null;
+    _selectedGender = null;
+    _isCodeSent = false;
+    _remainingSeconds = 60;
+    _canResend = false;
+    _timer?.cancel();
   }
 
   @override
   void dispose() {
-    _phoneController.removeListener(_formatPhoneNumber);
     _phoneController.dispose();
     for (var controller in _codeControllers) controller.dispose();
     _fullNameController.dispose();
     _usernameController.dispose();
+    _timer?.cancel();
     SmsAutoFill().unregisterListener();
     super.dispose();
   }

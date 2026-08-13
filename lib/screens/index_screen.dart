@@ -1,258 +1,999 @@
-import 'package:carousel_slider/carousel_slider.dart';
+import 'dart:async';
+import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:provider/provider.dart';
-import 'package:riya_play/blocs/index/index_bloc.dart';
-import 'package:riya_play/screens/auth_screen.dart';
-import 'package:riya_play/screens/film_screen.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:riya_play/screens/latestviewed_screen.dart';
+import 'package:riya_play/screens/recommended_films_screen.dart';
 import 'package:riya_play/services/api_service.dart';
-import 'package:riya_play/services/storage_service.dart';
+import 'package:riya_play/screens/film_screen.dart';
 import 'package:riya_play/theme_provider.dart';
+import 'package:riya_play/widgets/recommended_films_widget.dart';
+import 'package:carousel_slider/carousel_slider.dart';
+import 'package:riya_play/screens/error_pages.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:riya_play/screens/genres_screen.dart';
+import 'package:riya_play/screens/genres_films_screen.dart';
+import 'package:riya_play/screens/categories_screen.dart';
+import 'package:riya_play/utils/navigation.dart';
+import 'package:riya_play/utils/image_cache_manager.dart';
+import 'package:riya_play/utils/app_logger.dart';
+import 'package:riya_play/main.dart' show MainScreen;
+import 'package:riya_play/services/cache_service.dart';
+import 'package:riya_play/utils/latest_viewed.dart';
+import 'package:riya_play/utils/video_launcher.dart';
+
+// Holatni boshqarish uchun Provider
+class IndexScreenProvider with ChangeNotifier {
+  List<dynamic> _banners = [];
+  List<dynamic> _latestViewed = [];
+  List<dynamic> _recommendedFilms = [];
+  List<dynamic> _genresPreview = [];
+  List<dynamic> _categories = [];
+  Map<int, List<dynamic>> _categoryFilms = {};
+  bool _isLoadingBanners = true;
+  bool _isLoadingLatestViewed = true;
+  bool _isLoadingRecommended = true;
+  bool _isLoadingGenres = true;
+  bool _isLoadingCategories = true;
+  Map<int, bool> _isLoadingCategoryFilms = {};
+  String? _globalError;
+  int? _globalErrorStatusCode;
+  String? _genresError;
+
+  List<dynamic> get banners => _banners;
+  List<dynamic> get latestViewed => _latestViewed;
+  List<dynamic> get recommendedFilms => _recommendedFilms;
+  List<dynamic> get genresPreview => _genresPreview;
+  List<dynamic> get categories => _categories;
+  Map<int, List<dynamic>> get categoryFilms => _categoryFilms;
+  bool get isLoadingBanners => _isLoadingBanners;
+  bool get isLoadingLatestViewed => _isLoadingLatestViewed;
+  bool get isLoadingRecommended => _isLoadingRecommended;
+  bool get isLoadingGenres => _isLoadingGenres;
+  bool get isLoadingCategories => _isLoadingCategories;
+  Map<int, bool> get isLoadingCategoryFilms => _isLoadingCategoryFilms;
+  String? get globalError => _globalError;
+  int? get globalErrorStatusCode => _globalErrorStatusCode;
+  String? get genresError => _genresError;
+
+  // TUZATILISHGA MUHTOJ: notifyListeners() olib tashlangan, faqat ma'lumot yangilandi, lekin UI yangilanmaydi
+  void updateBanners(List<dynamic> data) {
+    _banners = data;
+    _isLoadingBanners = false;
+    appLogger.d('Bannerlar yuklandi: ${_banners.length} ta');
+    // TUZATISH: notifyListeners(); // Ehtiyojga qarab qo'shish kerak
+  }
+
+  void updateLatestViewed(List<dynamic> data) {
+    _latestViewed = data;
+    _isLoadingLatestViewed = false;
+    // TUZATISH: notifyListeners();
+  }
+
+  void updateRecommendedFilms(List<dynamic> data) {
+    _recommendedFilms = data;
+    _isLoadingRecommended = false;
+    // TUZATISH: notifyListeners();
+  }
+
+  void updateGenresPreview(List<dynamic> data) {
+    _genresPreview = data;
+    _isLoadingGenres = false;
+    _genresError = null;
+    // TUZATISH: notifyListeners();
+  }
+
+  void updateCategories(List<dynamic> data) {
+    _categories = data;
+    _isLoadingCategories = false;
+    for (var category in data) {
+      _isLoadingCategoryFilms[category['id']] = true;
+      _categoryFilms[category['id']] = [];
+    }
+    // TUZATISH: notifyListeners();
+  }
+
+  void updateCategoryFilms(int categoryId, List<dynamic> films) {
+    _categoryFilms[categoryId] = films;
+    _isLoadingCategoryFilms[categoryId] = false;
+    // TUZATISH: notifyListeners();
+  }
+
+  void setLoadingBanners(bool value) {
+    _isLoadingBanners = value;
+    notifyListeners();
+  }
+
+  void setLoadingLatestViewed(bool value) {
+    _isLoadingLatestViewed = value;
+    notifyListeners();
+  }
+
+  void setLoadingRecommended(bool value) {
+    _isLoadingRecommended = value;
+    notifyListeners();
+  }
+
+  void setLoadingGenres(bool value) {
+    _isLoadingGenres = value;
+    notifyListeners();
+  }
+
+  void setLoadingCategories(bool value) {
+    _isLoadingCategories = value;
+    notifyListeners();
+  }
+
+  void setGlobalError(String error, int? statusCode) {
+    _globalError = error;
+    _globalErrorStatusCode = statusCode;
+    _isLoadingBanners = false;
+    _isLoadingLatestViewed = false;
+    _isLoadingRecommended = false;
+    _isLoadingGenres = false;
+    _isLoadingCategories = false;
+    _isLoadingCategoryFilms.clear();
+    _banners = [];
+    _latestViewed = [];
+    _recommendedFilms = [];
+    _genresPreview = [];
+    _categories = [];
+    _categoryFilms = {};
+    appLogger.d('Global error set: $error, StatusCode: $statusCode');
+    notifyListeners();
+  }
+
+  void setGenresError(String error) {
+    _genresError = error;
+    _isLoadingGenres = false;
+    notifyListeners();
+  }
+
+  void clearGlobalError() {
+    _globalError = null;
+    _globalErrorStatusCode = null;
+    notifyListeners();
+  }
+
+  void reset() {
+    _banners = [];
+    _latestViewed = [];
+    _recommendedFilms = [];
+    _genresPreview = [];
+    _categories = [];
+    _categoryFilms = {};
+    _isLoadingBanners = true;
+    _isLoadingLatestViewed = true;
+    _isLoadingRecommended = true;
+    _isLoadingGenres = true;
+    _isLoadingCategories = true;
+    _isLoadingCategoryFilms = {};
+    _globalError = null;
+    _globalErrorStatusCode = null;
+    _genresError = null;
+    appLogger.d('Provider reset');
+    notifyListeners();
+  }
+
+  // YANGI: Barcha yangilanishlardan so'ng bir marta notify qilish uchun metod
+  void notifyAfterUpdates() {
+    notifyListeners();
+  }
+}
 
 class IndexScreen extends StatelessWidget {
   const IndexScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final storage = StorageService();
-    final apiService = ApiService(storage);
+    return ChangeNotifierProvider(
+      create: (_) => IndexScreenProvider(),
+      child: const IndexScreenContent(),
+    );
+  }
+}
 
-    return BlocProvider(
-      create: (_) => IndexBloc(apiService)..add(FetchIndexDataEvent()),
-      child: BlocListener<IndexBloc, IndexState>(
-        listener: (context, state) {
-          if (state is IndexError) {
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(SnackBar(content: Text(state.message)));
-          }
-          if (state is IndexLoggedOut) {
-            Navigator.pushReplacement(
-              context,
-              MaterialPageRoute(builder: (_) => const AuthScreen()),
-            );
-          }
+class IndexScreenContent extends StatefulWidget {
+  const IndexScreenContent({super.key});
+
+  @override
+  State<IndexScreenContent> createState() => _IndexScreenContentState();
+}
+
+class _IndexScreenContentState extends State<IndexScreenContent> {
+  bool _isShowingError = false;
+  StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
+  Timer? _connectivityDebounce;
+
+  @override
+  void initState() {
+    super.initState();
+    appLogger.d('IndexScreen initState called');
+    _connectivitySubscription = Connectivity().onConnectivityChanged.listen((
+      List<ConnectivityResult> results,
+    ) {
+      appLogger.d('Connectivity changed: $results');
+      if (_connectivityDebounce?.isActive ?? false)
+        _connectivityDebounce!.cancel();
+      _connectivityDebounce = Timer(const Duration(seconds: 1), () {
+        if (results.every((result) => result == ConnectivityResult.none)) {
+          appLogger.d('No network connection detected, showing error page');
+          final provider = Provider.of<IndexScreenProvider>(
+            context,
+            listen: false,
+          );
+          provider.setGlobalError('Tarmoq xatosi', null);
+        } else {
+          appLogger.d('Network connection restored, fetching initial data');
+          _fetchInitialData();
+        }
+      });
+    });
+
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      appLogger.d('Initial data fetch triggered');
+      // Kesh avval chiziladi, keyin tarmoqdan yangilanadi.
+      await _primeFromCache();
+      if (mounted) _fetchInitialData();
+    });
+  }
+
+  @override
+  void dispose() {
+    appLogger.d('IndexScreen dispose called');
+    _connectivitySubscription?.cancel();
+    _connectivityDebounce?.cancel();
+    super.dispose();
+  }
+
+  // TUZATILISHA MUHTOJ: So'rovlar sequential, parallel Future.wait ishlatsa samaraliroq bo'ladi
+  /// Paints the last known content before the network is consulted, so a
+  /// cold start isn't a screen of empty sections. Anything stale is replaced
+  /// a moment later by [_fetchInitialData]; anything missing just stays
+  /// empty as before.
+  Future<void> _primeFromCache() async {
+    final provider = Provider.of<IndexScreenProvider>(context, listen: false);
+
+    final banners = await CacheService.get<List>(CacheService.bannersKey);
+    if (banners != null) provider.updateBanners(banners);
+
+    final recommended = await CacheService.get<List>(
+      CacheService.recommendedKey,
+    );
+    if (recommended != null) {
+      provider.updateRecommendedFilms(await _processFilms(recommended));
+    }
+
+    final genres = await CacheService.get<List>(CacheService.genresKey);
+    if (genres != null) provider.updateGenresPreview(genres);
+
+    final latestViewed = await CacheService.get<List>(
+      CacheService.latestViewedKey,
+    );
+    if (latestViewed != null) provider.updateLatestViewed(latestViewed);
+
+    if (mounted) provider.notifyAfterUpdates();
+  }
+
+  Future<void> _fetchInitialData() async {
+    final provider = Provider.of<IndexScreenProvider>(context, listen: false);
+    provider.clearGlobalError();
+    if (!(await _checkInternetConnection())) {
+      appLogger.d('No internet connection, setting global error');
+      provider.setGlobalError('Tarmoq xatosi', null);
+      return;
+    }
+
+    try {
+      appLogger.d('Fetching initial data');
+      // Ketma-ket so'rovlar
+      await _fetchData(
+        fetchFunction: ApiService.getBanners,
+        onSuccess: (data) {
+          provider.updateBanners(data);
+          CacheService.put(CacheService.bannersKey, data);
         },
-        child: Builder(
-          builder: (context) {
-            final themeProvider = context.watch<ThemeProvider>();
-            return Scaffold(
-              backgroundColor:
-                  themeProvider.isDarkMode
-                      ? const Color(0xFF111827)
-                      : Colors.grey[100],
-              body: SafeArea(
-                child: SingleChildScrollView(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _buildHeader(context, themeProvider),
-                      _buildBanners(context),
-                      _buildLatestViewed(context, themeProvider),
-                    ],
-                  ),
+        onError: (error, statusCode) {
+          provider.setGlobalError(error, statusCode);
+        },
+        errorMessage: 'Bannerlarni yuklashda xato',
+      );
+      await _fetchData(
+        fetchFunction:
+            () => ApiService.getLatestViewed(
+              isAll: false,
+              perPage: 10,
+              fields:
+                  'name_uz,name_ru,name_en,id,films.id,films.name_uz,films.name_ru,films.publish_time,films.type,films.paid,films.year,films.tags.id,films.tags.title_uz,films.tags.title_en,films.files.thumbnails',
+            ),
+        onSuccess: (response) {
+          final films = response['data'] ?? [];
+          provider.updateLatestViewed(films);
+          CacheService.put(CacheService.latestViewedKey, films);
+        },
+        onError: (error, statusCode) {
+          provider.setGlobalError(error, statusCode);
+        },
+        errorMessage: 'So‘ngi ko‘rilganlarni yuklashda xato',
+      );
+      await _fetchData(
+        fetchFunction: ApiService.getRecommendedFilms,
+        onSuccess: (response) async {
+          final films = response['data'] ?? [];
+          final processedFilms = await _processFilms(films);
+          provider.updateRecommendedFilms(processedFilms);
+          // Xom javob keshlanadi — ilova qayta ochilganda _processFilms
+          // yana ishlaydi, shunda kesh ishlov mantig'iga bog'lanmaydi.
+          CacheService.put(CacheService.recommendedKey, films);
+        },
+        onError: (error, statusCode) {
+          provider.setGlobalError(error, statusCode);
+        },
+        errorMessage: 'Tavsiya etilganlarni yuklashda xato',
+      );
+      await _fetchData(
+        fetchFunction: ApiService.getGenresPreview,
+        onSuccess: (data) {
+          provider.updateGenresPreview(data);
+          CacheService.put(CacheService.genresKey, data);
+        },
+        onError: (error, statusCode) {
+          provider.setGenresError(error);
+          provider.setGlobalError(error, statusCode);
+        },
+        errorMessage: 'Janrlar yuklashda xatolik',
+      );
+      await _fetchCategories();
+      appLogger.d('Initial data fetched successfully');
+      provider.notifyAfterUpdates(); // YANGI QO'SHILDI: Bir marta notify
+    } catch (e, stackTrace) {
+      appLogger.d('Error fetching initial data: $e');
+      appLogger.d('StackTrace: $stackTrace');
+      provider.setGlobalError('Umumiy xato: $e', null);
+    }
+  }
+
+  Future<void> _fetchData<T>({
+    required Future<T> Function() fetchFunction,
+    required Function(T) onSuccess,
+    required Function(String, int?) onError,
+    required String errorMessage,
+  }) async {
+    try {
+      final data = await fetchFunction();
+      if (data is Map<String, dynamic> && data['success'] == false) {
+        final statusCode = data['statusCode'] as int?;
+        final error = data['error']?.toString() ?? 'Noma’lum xato';
+        onError(error, statusCode);
+      } else {
+        onSuccess(data);
+      }
+    } catch (e, stackTrace) {
+      final error = e.toString();
+      onError(error, null);
+      appLogger.d('$errorMessage xatosi: $e\nStackTrace: $stackTrace');
+    }
+  }
+
+  // notifyAfterUpdates() qo'shildi va notifyListeners() kamaytirildi
+  Future<void> _fetchCategories() async {
+    final provider = Provider.of<IndexScreenProvider>(context, listen: false);
+    await _fetchData(
+      fetchFunction: ApiService.getCategories,
+      onSuccess: (response) async {
+        final List categoryList = response['data'] ?? [];
+        if (categoryList.isEmpty) {
+          appLogger.d('Kategoriyalar bo‘sh, loading holatini o‘chirish');
+          provider.updateCategories([]);
+          provider.notifyAfterUpdates();
+          return;
+        }
+        provider.updateCategories(categoryList);
+        provider.notifyAfterUpdates();
+        try {
+          await Future.wait(
+            categoryList.map(
+              (category) => _fetchFilmsForCategory(category['id']),
+            ),
+          );
+          provider.notifyAfterUpdates();
+        } catch (e, stackTrace) {
+          appLogger.d('Kategoriya filmlarini yuklashda xato: $e');
+          appLogger.d('StackTrace: $stackTrace');
+          for (var category in categoryList) {
+            provider.updateCategoryFilms(category['id'], []);
+          }
+          provider.notifyAfterUpdates();
+        }
+      },
+      onError: (error, statusCode) {
+        appLogger.d('Kategoriyalarni yuklashda xato: $error');
+        provider.setGlobalError(error, statusCode);
+      },
+      errorMessage: 'Kategoriyalarni yuklashda xato',
+    );
+  }
+
+  Future<void> _fetchFilmsForCategory(int categoryId) async {
+    final provider = Provider.of<IndexScreenProvider>(context, listen: false);
+    await _fetchData(
+      fetchFunction:
+          () => ApiService.getFilmsByCategory(
+            categoryId: categoryId,
+            page: 1,
+            perPage: 10,
+          ),
+      onSuccess: (response) async {
+        final films = response['data'] ?? [];
+        appLogger.d(
+          'Kategoriya $categoryId uchun filmlar yuklandi: ${films.length} ta',
+        );
+        final processedFilms = await _processFilms(films);
+        provider.updateCategoryFilms(categoryId, processedFilms);
+      },
+      onError: (error, statusCode) {
+        appLogger.d('Kategoriya $categoryId filmlarini yuklashda xato: $error');
+        provider.updateCategoryFilms(categoryId, []);
+      },
+      errorMessage: 'Kategoriya filmlarini yuklashda xato',
+    );
+  }
+
+  Future<bool> _checkInternetConnection() async {
+    try {
+      final connectivityResult = await Connectivity().checkConnectivity();
+      final isConnected = connectivityResult.any(
+        (result) => result != ConnectivityResult.none,
+      );
+      appLogger.d(
+        'Connectivity check: $connectivityResult, Connected: $isConnected',
+      );
+      if (!isConnected) return false;
+
+      final result = await InternetAddress.lookup('google.com').timeout(
+        const Duration(seconds: 5),
+        onTimeout: () {
+          appLogger.d('Internet check timed out');
+          return [];
+        },
+      );
+      if (result.isNotEmpty && result[0].rawAddress.isNotEmpty) {
+        appLogger.d('Internet check successful');
+        return true;
+      }
+      appLogger.d('Internet check failed: No address');
+      return false;
+    } catch (e) {
+      appLogger.d('Internet check error: $e');
+      return false;
+    }
+  }
+
+  void _showErrorPage(BuildContext context) {
+    if (_isShowingError || !mounted) return;
+
+    _isShowingError = true;
+    final provider = Provider.of<IndexScreenProvider>(context, listen: false);
+    final error = provider.globalError;
+    final statusCode = provider.globalErrorStatusCode;
+
+    if (error == null) {
+      _isShowingError = false;
+      return;
+    }
+
+    provider.clearGlobalError();
+
+    _checkInternetConnection().then((isConnected) {
+      if (!mounted) return;
+
+      if (!isConnected || error.contains('Tarmoq xatosi')) {
+        appLogger.d('Showing NetworkErrorPage');
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder:
+                (context) => NetworkErrorPage(onRetry: () => _onRetry(context)),
+          ),
+        );
+      } else {
+        appLogger.d('Showing ServerErrorPage');
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(
+            builder:
+                (context) => ServerErrorPage(
+                  statusCode: statusCode,
+                  errorMessage: error,
+                  onRetry:
+                      statusCode == 401 || statusCode == 403
+                          ? null
+                          : () => _onRetry(context),
                 ),
-              ),
-            );
-          },
+          ),
+        );
+      }
+
+      Future.delayed(const Duration(milliseconds: 100), () {
+        if (mounted) {
+          setState(() {
+            _isShowingError = false;
+          });
+        }
+      });
+    });
+  }
+
+  void _showLoading(BuildContext context) {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return const Center(child: CircularProgressIndicator());
+      },
+    );
+  }
+
+  Future<void> _onRetry(BuildContext context) async {
+    appLogger.d('Retry button pressed');
+    _showLoading(context);
+
+    try {
+      final isConnected = await _checkInternetConnection();
+
+      if (isConnected) {
+        appLogger.d('Internet connected, proceeding with retry');
+        await Future.delayed(const Duration(seconds: 2));
+        Navigator.of(context).pop();
+        // MainScreen'ga qaytamiz, IndexScreen'ga emas: pastki navigatsiya
+        // MainScreen'da joylashgan, shuning uchun bevosita IndexScreen'ni
+        // ochish tablarni butunlay yo'qotib yuboradi.
+        Navigator.pushAndRemoveUntil(
+          context,
+          MaterialPageRoute(builder: (_) => const MainScreen()),
+          (route) => false,
+        );
+      } else {
+        appLogger.d('No internet connection, showing snackbar');
+        Navigator.of(context).pop();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Internet aloqasi hali ham yo‘q')),
+          );
+        }
+      }
+    } catch (e, stackTrace) {
+      appLogger.d('Error in _onRetry: $e');
+      appLogger.d('StackTrace: $stackTrace');
+      Navigator.of(context).pop();
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Xatolik yuz berdi: $e')));
+      }
+    }
+  }
+
+  Future<List<dynamic>> _processFilms(List<dynamic> newFilms) async {
+    return newFilms.take(20).toList();
+  }
+
+  Future<void> _refresh() async {
+    final provider = Provider.of<IndexScreenProvider>(context, listen: false);
+    if (!(await _checkInternetConnection())) {
+      appLogger.d('No internet connection during refresh');
+      provider.setGlobalError('Tarmoq xatosi', null);
+      return;
+    }
+    appLogger.d('Refreshing data');
+    provider.reset();
+    await _fetchInitialData();
+    if (mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Ma\'lumotlar yangilandi')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    appLogger.d('IndexScreen build called');
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final provider = Provider.of<IndexScreenProvider>(context);
+
+    if (provider.globalError != null && !_isShowingError) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        appLogger.d('Global error detected, showing error page');
+        _showErrorPage(context);
+      });
+    }
+
+    if (provider.isLoadingBanners ||
+        provider.isLoadingLatestViewed ||
+        provider.isLoadingRecommended ||
+        provider.isLoadingGenres ||
+        provider.isLoadingCategories) {
+      return Scaffold(
+        backgroundColor:
+            themeProvider.isDarkMode
+                ? const Color(0xFF111827)
+                : Colors.grey[100],
+        body: const Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    return Scaffold(
+      backgroundColor:
+          themeProvider.isDarkMode ? const Color(0xFF111827) : Colors.grey[100],
+      appBar: AppBar(
+        backgroundColor:
+            themeProvider.isDarkMode
+                ? const Color(0xFF111827)
+                : Colors.grey[100],
+        elevation: 0,
+        title: Text(
+          "Asosiy sahifa",
+          style: TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+            color: themeProvider.isDarkMode ? Colors.white : Colors.grey[800],
+          ),
+        ),
+      ),
+      body: SafeArea(
+        child: RefreshIndicator(
+          onRefresh: _refresh,
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                provider.banners.isNotEmpty && !provider.isLoadingBanners
+                    ? const BannerCarousel()
+                    : const SizedBox(
+                      height: 200,
+                      child: Center(child: Text('Bannerlar mavjud emas')),
+                    ),
+                if (provider.latestViewed.isNotEmpty)
+                  const LatestViewedSection(),
+                const RecommendedFilmsSection(),
+                GenresSection(onRetry: () => _onRetry(context)),
+                const CategoriesSection(),
+                const SizedBox(height: 80),
+              ],
+            ),
+          ),
         ),
       ),
     );
   }
+}
 
-  Widget _buildHeader(BuildContext context, ThemeProvider themeProvider) {
-    return Padding(
-      padding: const EdgeInsets.all(16.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(
-            "Asosiy sahifa", // S.of(context).mainPage o‘rniga
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: themeProvider.isDarkMode ? Colors.white : Colors.grey[800],
-            ),
+// BannerCarousel
+class BannerCarousel extends StatefulWidget {
+  const BannerCarousel({super.key});
+
+  @override
+  State<BannerCarousel> createState() => _BannerCarouselState();
+}
+
+class _BannerCarouselState extends State<BannerCarousel>
+    with TickerProviderStateMixin {
+  int _currentIndex = 0;
+  late AnimationController _animationController;
+  final CarouselSliderController _carouselController =
+      CarouselSliderController();
+
+  @override
+  void initState() {
+    super.initState();
+    _animationController = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 6),
+    )..forward();
+  }
+
+  @override
+  void dispose() {
+    _animationController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final provider = Provider.of<IndexScreenProvider>(context);
+    final banners = provider.banners;
+    final isLoading = provider.isLoadingBanners;
+
+    if (isLoading) {
+      return const SizedBox(
+        height: 200,
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (banners.isEmpty) {
+      appLogger.d('BannerCarousel: Bannerlar bo‘sh');
+      return const SizedBox(
+        height: 200,
+        child: Center(
+          child: Text(
+            "Bannerlar topilmadi",
+            style: TextStyle(fontSize: 16, color: Colors.grey),
           ),
-          Row(
-            children: [
-              IconButton(
-                icon: Icon(
-                  themeProvider.isDarkMode
-                      ? Icons.wb_sunny
-                      : Icons.nightlight_round,
-                  color:
-                      themeProvider.isDarkMode
-                          ? Colors.yellow
-                          : Colors.blueGrey,
-                ),
-                tooltip:
-                    themeProvider.isDarkMode
-                        ? "Yorug'lik rejimi" // S.of(context).lightMode o‘rniga
-                        : "Tungi rejim", // S.of(context).darkMode o‘rniga
-                onPressed: themeProvider.toggleTheme,
-              ),
-              IconButton(
-                icon: const Icon(Icons.exit_to_app, color: Colors.redAccent),
-                tooltip: "Chiqish", // S.of(context).logout o‘rniga
-                onPressed: () => context.read<IndexBloc>().add(LogoutEvent()),
-              ),
-            ],
+        ),
+      );
+    }
+
+    return Stack(
+      alignment: Alignment.bottomCenter,
+      children: [
+        CarouselSlider(
+          carouselController: _carouselController,
+          options: CarouselOptions(
+            height: 200.0,
+            autoPlay: true,
+            autoPlayInterval: const Duration(seconds: 6),
+            enlargeCenterPage: true,
+            viewportFraction: 0.9,
+            onPageChanged: (index, reason) {
+              setState(() {
+                _currentIndex = index;
+                _animationController.reset();
+                _animationController.forward();
+              });
+            },
+          ),
+          items:
+              banners.map((banner) {
+                return Builder(
+                  builder: (BuildContext context) {
+                    return BannerItem(banner: banner);
+                  },
+                );
+              }).toList(),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8.0),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children:
+                banners.asMap().entries.map((entry) {
+                  final index = entry.key;
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                    child:
+                        _currentIndex == index
+                            ? ValueListenableBuilder<double>(
+                              valueListenable: _animationController,
+                              builder: (context, value, child) {
+                                return _buildAnimatedIndicator(value);
+                              },
+                            )
+                            : Container(
+                              width: 8.0,
+                              height: 8.0,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Colors.grey.withOpacity(0.5),
+                              ),
+                            ),
+                  );
+                }).toList(),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAnimatedIndicator(double progress) {
+    return SizedBox(
+      width: 16.0,
+      height: 16.0,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          CustomPaint(
+            painter: CircleProgressPainter(progress),
+            child: const SizedBox(width: 16.0, height: 16.0),
+          ),
+          Container(
+            width: 8.0,
+            height: 8.0,
+            decoration: const BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.white,
+            ),
           ),
         ],
       ),
     );
   }
+}
 
-  Widget _buildBanners(BuildContext context) {
-    return BlocBuilder<IndexBloc, IndexState>(
-      builder: (context, state) {
-        if (state.isLoadingBanners)
-          return const SizedBox(
-            height: 200,
-            child: Center(child: CircularProgressIndicator()),
-          );
-        if (state.banners.isEmpty)
-          return SizedBox(
-            height: 200,
-            child: Center(
-              child: Text(
-                "Bannerlar yo'q", // S.of(context).noBanners o‘rniga
-                style: const TextStyle(fontSize: 16, color: Colors.grey),
-              ),
-            ),
-          );
-        return CarouselSlider(
-          options: CarouselOptions(
-            height: 200.0,
-            autoPlay: true,
-            autoPlayInterval: const Duration(seconds: 4),
-            enlargeCenterPage: true,
-            viewportFraction: 0.9,
-          ),
-          items:
-              state.banners
-                  .map((banner) => _buildBannerItem(banner, context))
-                  .toList(),
-        );
-      },
+// Aylana animatsiyasi uchun CustomPainter
+class CircleProgressPainter extends CustomPainter {
+  final double progress;
+
+  CircleProgressPainter(this.progress);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final Paint paint =
+        Paint()
+          ..color = Colors.white
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.0;
+
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = (size.width - 2) / 2;
+
+    canvas.drawArc(
+      Rect.fromCircle(center: center, radius: radius),
+      -math.pi / 2,
+      2 * math.pi * progress,
+      false,
+      paint,
     );
   }
 
-  Widget _buildBannerItem(dynamic banner, BuildContext context) {
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+}
+
+// Banner Item
+class BannerItem extends StatelessWidget {
+  final dynamic banner;
+
+  const BannerItem({super.key, required this.banner});
+
+  @override
+  Widget build(BuildContext context) {
     final film = banner['film'] as Map<String, dynamic>? ?? {};
     final files = banner['files'] as List<dynamic>? ?? [];
     final imageUrl =
         files.isNotEmpty
             ? files[0]['link'] ?? 'https://placehold.co/640x360'
             : 'https://placehold.co/640x360';
-    final title =
-        film['name_uz'] ??
-        banner['title'] ??
-        "Noma'lum"; // S.of(context).unknown o‘rniga
-    final year = film['year'] ?? "Noma'lum"; // S.of(context).unknown o‘rniga
+    final title = film['name_uz'] ?? banner['title'] ?? 'Noma’lum';
+    final year = film['year']?.toString() ?? 'Noma’lum';
     final kinopoiskRating = film['kinopoisk_rating']?.toString() ?? 'N/A';
     final imdbRating = film['imdb_rating']?.toString() ?? 'N/A';
     final filmId = film['id'] ?? 0;
 
     return GestureDetector(
-      onTap:
-          () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => FilmScreen(filmId: filmId)),
-          ),
-      child: Stack(
-        children: [
-          Container(
-            margin: const EdgeInsets.symmetric(horizontal: 5.0),
-            decoration: BoxDecoration(
+      onTap: () {
+        Navigator.push(context, createSlideRoute(FilmScreen(filmId: filmId)));
+      },
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 5.0),
+        decoration: BoxDecoration(borderRadius: BorderRadius.circular(10)),
+        child: Stack(
+          children: [
+            ClipRRect(
               borderRadius: BorderRadius.circular(10),
-              image: DecorationImage(
-                image: NetworkImage(imageUrl),
+              child: CachedNetworkImage(
+                imageUrl: imageUrl,
+                cacheManager: filmImagesCacheManager,
+                width: double.infinity,
+                height: 200,
                 fit: BoxFit.cover,
+                placeholder:
+                    (context, url) =>
+                        const Center(child: CircularProgressIndicator()),
+                errorWidget: (context, url, error) {
+                  appLogger.d('Banner rasm yuklash xatosi: $error');
+                  return Container(
+                    width: double.infinity,
+                    height: 200,
+                    color: Colors.grey[300],
+                    child: const Center(
+                      child: Text(
+                        'Rasmni yuklashda xato',
+                        style: TextStyle(color: Colors.grey),
+                      ),
+                    ),
+                  );
+                },
               ),
             ),
-          ),
-          Container(
-            margin: const EdgeInsets.symmetric(horizontal: 5.0),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(10),
-              gradient: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [Colors.transparent, Colors.black.withOpacity(0.6)],
+            Container(
+              width: double.infinity,
+              height: 200,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(10),
+                gradient: LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  colors: [
+                    Colors.transparent,
+                    Colors.black.withOpacity(0.6), // TUZATILDI
+                  ],
+                ),
               ),
             ),
-          ),
-          Positioned(customBannerItemLeftColumn(title, year)),
-          Positioned(customBannerItemRightColumn(kinopoiskRating, imdbRating)),
-        ],
+            Positioned(
+              bottom: 10,
+              left: 18,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // TUZATILISHA MUHTOJ: substring o‘rniga ellipsis ishlatish yaxshi
+                  Text(
+                    title.length > 16 ? '${title.substring(0, 16)}...' : title,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  Text(
+                    year,
+                    style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+            Positioned(
+              bottom: 10,
+              right: 18,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Row(
+                    children: [
+                      Text(
+                        'Kinopoisk: ',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                      ),
+                      Text(
+                        kinopoiskRating,
+                        style: const TextStyle(
+                          color: Colors.yellow,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Row(
+                    children: [
+                      Text(
+                        'IMDb: ',
+                        style: TextStyle(color: Colors.grey[400], fontSize: 12),
+                      ),
+                      Text(
+                        imdbRating,
+                        style: const TextStyle(
+                          color: Colors.yellow,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
+}
 
-  Positioned customBannerItemLeftColumn(String title, String year) {
-    return Positioned(
-      bottom: 10,
-      left: 18,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            title,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          Text(year, style: TextStyle(color: Colors.grey[400], fontSize: 12)),
-        ],
-      ),
-    );
-  }
+// Latest Viewed Section
+class LatestViewedSection extends StatelessWidget {
+  const LatestViewedSection({super.key});
 
-  Positioned customBannerItemRightColumn(
-    String kinopoiskRating,
-    String imdbRating,
-  ) {
-    return Positioned(
-      bottom: 10,
-      right: 18,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          Row(
-            children: [
-              Text(
-                "Kinopoisk: ", // S.current.kinopoisk o‘rniga
-                style: TextStyle(color: Colors.grey[400], fontSize: 12),
-              ),
-              Text(
-                kinopoiskRating,
-                style: const TextStyle(color: Colors.yellow, fontSize: 12),
-              ),
-            ],
-          ),
-          const SizedBox(height: 2),
-          Row(
-            children: [
-              Text(
-                'IMDb: ',
-                style: TextStyle(color: Colors.grey[400], fontSize: 12),
-              ),
-              Text(
-                imdbRating,
-                style: const TextStyle(color: Colors.yellow, fontSize: 12),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
+  @override
+  Widget build(BuildContext context) {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final provider = Provider.of<IndexScreenProvider>(context);
+    final latestViewed = provider.latestViewed;
+    final isLoading = provider.isLoadingLatestViewed;
 
-  Widget _buildLatestViewed(BuildContext context, ThemeProvider themeProvider) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 16.0, horizontal: 16.0),
       child: Column(
@@ -262,7 +1003,7 @@ class IndexScreen extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
-                "Davom ettirish", // S.of(context).continueWatching o‘rniga
+                "Ko‘rishni davom ettirish",
                 style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.bold,
@@ -274,104 +1015,124 @@ class IndexScreen extends StatelessWidget {
               ),
               IconButton(
                 icon: const Icon(Icons.chevron_right, size: 24),
-                onPressed: () {},
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    createSlideRoute(const LatestViewedScreen()),
+                  );
+                },
               ),
             ],
           ),
           SizedBox(
-            height: 150,
-            child: BlocBuilder<IndexBloc, IndexState>(
-              builder: (context, state) {
-                if (state.isLoadingLatestViewed)
-                  return const Center(child: CircularProgressIndicator());
-                if (state.latestViewed.isEmpty)
-                  return Center(
-                    child: Text(
-                      "So'nggi ko'rilganlar yo'q", // S.of(context).noLatestViewed o‘rniga
-                      style: const TextStyle(fontSize: 16, color: Colors.grey),
+            height: 120,
+            child:
+                isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: latestViewed.length,
+                      itemExtent: 180,
+                      cacheExtent: 9999, // TUZATILISHGA MUHTOJ: juda katta
+                      itemBuilder: (context, index) {
+                        return LatestViewedItem(item: latestViewed[index]);
+                      },
                     ),
-                  );
-                return ListView.builder(
-                  scrollDirection: Axis.horizontal,
-                  itemCount: state.latestViewed.length,
-                  itemBuilder:
-                      (context, index) => _buildLatestViewedItem(
-                        state.latestViewed[index],
-                        context,
-                      ),
-                );
-              },
-            ),
           ),
         ],
       ),
     );
   }
+}
 
-  Widget _buildLatestViewedItem(dynamic item, BuildContext context) {
+// Latest Viewed Item
+class LatestViewedItem extends StatelessWidget {
+  final dynamic item;
+
+  const LatestViewedItem({super.key, required this.item});
+
+  @override
+  Widget build(BuildContext context) {
     final film = item['film'] as Map<String, dynamic>? ?? {};
     final screenshots = item['screenshots'] as List<dynamic>? ?? [];
     final second = item['second'] as Map<String, dynamic>? ?? {};
+    final file =
+        screenshots.isNotEmpty
+            ? (screenshots[0]['file'] as List<dynamic>?)?.first ?? {}
+            : {};
     final imageUrl =
         screenshots.isNotEmpty
-            ? screenshots[0]['file'][0]['link'] ??
-                'https://placehold.co/320x180'
+            ? (file['thumbnails'] != null &&
+                    file['thumbnails']['small'] != null &&
+                    file['thumbnails']['small']['src'] != null
+                ? file['thumbnails']['small']['src']
+                : file['link'] ?? 'https://placehold.co/320x180')
             : 'https://placehold.co/320x180';
-    final title =
-        film['name_uz'] ??
-        item['name_uz'] ??
-        "Noma'lum"; // S.of(context).unknown o‘rniga
-    final filmId = film['id'] ?? 0;
+    final filmId = film['id'] ?? item['film_id'] ?? 0;
     final viewedTime = second['time'] ?? 0;
-    final playbackTime = film['playback_time'] ?? 1;
-    final viewedMinutes = (viewedTime / 60).floor();
-    final viewedSeconds = viewedTime % 60;
-    final viewedTimeString =
-        '${viewedMinutes.toString().padLeft(2, '0')}:${viewedSeconds.toString().padLeft(2, '0')}';
-    final progress = viewedTime / (playbackTime * 60);
+    final double progress = latestViewedProgress(item);
+    final viewedTimeString = formatWatchedTime(viewedTime);
 
     return GestureDetector(
-      onTap:
-          () => Navigator.push(
-            context,
-            MaterialPageRoute(builder: (_) => FilmScreen(filmId: filmId)),
-          ),
+      // Film sahifasini ochish o'rniga to'g'ridan-to'g'ri o'ynatamiz:
+      // "Ko'rishni davom ettirish" aynan shu ortiqcha qadamlarni yo'q qilish
+      // uchun bor. Film sahifasi uzoq bosish orqali ochiladi.
+      onTap: () => VideoLauncher.playFromLatestViewed(context, item),
+      onLongPress: () {
+        Navigator.push(context, createSlideRoute(FilmScreen(filmId: filmId)));
+      },
       child: Container(
-        width: 200,
+        width: 170,
         margin: const EdgeInsets.only(right: 10),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(8),
+          image: DecorationImage(
+            image: CachedNetworkImageProvider(
+              imageUrl,
+              cacheManager: filmImagesCacheManager,
+              // TUZATILISHGA MUHTOJ: errorListener faqat rasm yuklash xatolarini tutadi, UI errorWidget emas!
+            ),
+            fit: BoxFit.cover,
+          ),
+        ),
         child: Stack(
           children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(8),
-              child: Image.network(
-                imageUrl,
-                width: 200,
-                height: 150,
-                fit: BoxFit.cover,
-              ),
-            ),
             Positioned(
-              bottom: 10,
-              right: 10,
+              bottom: 8,
+              right: 8,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  Text(
-                    viewedTimeString,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 12,
-                      fontWeight: FontWeight.bold,
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: Colors.grey.withOpacity(0.7),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      viewedTimeString,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 10,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
                   const SizedBox(height: 4),
                   SizedBox(
-                    width: 180,
+                    width: 160,
                     child: LinearProgressIndicator(
-                      value: progress.clamp(0.0, 1.0),
+                      value: progress,
                       backgroundColor: Colors.grey[400],
-                      valueColor: const AlwaysStoppedAnimation<Color>(
-                        Colors.yellow,
+                      // "So'nggi ko'rilganlar" ekrani bilan bir xil rang.
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        Provider.of<ThemeProvider>(
+                          context,
+                          listen: false,
+                        ).accentColor,
                       ),
                     ),
                   ),
@@ -385,108 +1146,451 @@ class IndexScreen extends StatelessWidget {
   }
 }
 
-class IndexBloc extends Bloc<IndexEvent, IndexState> {
-  final ApiService apiService;
+// Recommended Films Section
+class RecommendedFilmsSection extends StatelessWidget {
+  const RecommendedFilmsSection({super.key});
 
-  IndexBloc(this.apiService) : super(IndexState.initial()) {
-    on<FetchIndexDataEvent>((event, emit) async {
-      emit(state.copyWith(isLoadingBanners: true, isLoadingLatestViewed: true));
-      try {
-        final banners = await apiService.getBanners();
-        final latestViewed = await apiService.getLatestViewed();
-        emit(
-          state.copyWith(
-            banners: banners,
-            latestViewed: latestViewed,
-            isLoadingBanners: false,
-            isLoadingLatestViewed: false,
-          ),
-        );
-      } catch (e) {
-        emit(
-          state.copyWith(
-            isLoadingBanners: false,
-            isLoadingLatestViewed: false,
-            message:
-                "Ma'lumotlarni yuklashda xatolik: $e", // S.current.errorLoadingData o‘rniga
-          ),
-        );
-      }
-    });
+  @override
+  Widget build(BuildContext context) {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final provider = Provider.of<IndexScreenProvider>(context);
+    final films = provider.recommendedFilms;
+    final isLoading = provider.isLoadingRecommended;
 
-    on<LogoutEvent>((event, emit) async {
-      try {
-        await apiService.logout();
-        emit(IndexLoggedOut());
-      } catch (e) {
-        emit(
-          IndexError("Chiqishda xatolik: $e"),
-        ); // S.current.logoutError o‘rniga
-      }
-    });
+    return RecommendedFilmsWidget(
+      films: films,
+      isLoading: isLoading,
+      isDark: themeProvider.isDarkMode,
+      onTap: (film) {
+        final filmId = film['id'];
+        Navigator.push(context, createSlideRoute(FilmScreen(filmId: filmId)));
+      },
+      onMoreTap: () {
+        Navigator.push(
+          context,
+          createSlideRoute(const RecommendedFilmsScreen()),
+        );
+      },
+    );
   }
 }
 
-sealed class IndexEvent {}
+// Genres Section
+class GenresSection extends StatelessWidget {
+  final VoidCallback onRetry;
 
-class FetchIndexDataEvent extends IndexEvent {}
+  const GenresSection({super.key, required this.onRetry});
 
-class LogoutEvent extends IndexEvent {}
+  @override
+  Widget build(BuildContext context) {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final provider = Provider.of<IndexScreenProvider>(context);
+    final genres = provider.genresPreview;
+    final isLoading = provider.isLoadingGenres;
+    final error = provider.genresError;
 
-class IndexState {
-  final List<dynamic> banners;
-  final List<dynamic> latestViewed;
-  final bool isLoadingBanners;
-  final bool isLoadingLatestViewed;
-  final String? message;
+    if (isLoading) {
+      return const Padding(
+        padding: EdgeInsets.all(16),
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+    if (error != null) {
+      return Padding(
+        padding: const EdgeInsets.all(16),
+        child: Center(
+          child: Column(
+            children: [
+              Text(
+                "Janrlarni yuklashda xato: $error",
+                style: const TextStyle(fontSize: 16, color: Colors.grey),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 8),
+              ElevatedButton(
+                onPressed: onRetry,
+                child: const Text('Qayta urinish'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    if (genres.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.all(16),
+        child: Center(
+          child: Text(
+            "Janrlar topilmadi",
+            style: TextStyle(fontSize: 16, color: Colors.grey),
+          ),
+        ),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                "Janrlar",
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color:
+                      themeProvider.isDarkMode
+                          ? Colors.white
+                          : Colors.grey[800],
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.chevron_right),
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    createSlideRoute(const GenresScreen()),
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+        SizedBox(
+          height: 200,
+          child: ListView.builder(
+            scrollDirection: Axis.horizontal,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            itemCount: genres.length,
+            itemBuilder: (context, index) {
+              final genre = genres[index];
+              return Padding(
+                padding: const EdgeInsets.only(right: 12),
+                child: GenreCard(
+                  genre: genre,
+                  onTap: () async {
+                    final connectivityResult =
+                        await Connectivity().checkConnectivity();
+                    if (connectivityResult.every(
+                      (result) => result == ConnectivityResult.none,
+                    )) {
+                      appLogger.d(
+                        'No internet connection, navigating to NetworkErrorPage',
+                      );
+                      Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) => NetworkErrorPage(onRetry: onRetry),
+                        ),
+                      );
+                    } else {
+                      Navigator.push(
+                        context,
+                        createSlideRoute(GenresFilmsScreen(genre: genre)),
+                      );
+                    }
+                  },
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+}
 
-  IndexState({
-    required this.banners,
-    required this.latestViewed,
-    required this.isLoadingBanners,
-    required this.isLoadingLatestViewed,
-    this.message,
+// Categories Section
+class CategoriesSection extends StatelessWidget {
+  const CategoriesSection({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final provider = Provider.of<IndexScreenProvider>(context);
+    final categories = provider.categories;
+    final categoryFilms = provider.categoryFilms;
+    final isLoadingCategoryFilms = provider.isLoadingCategoryFilms;
+
+    if (provider.isLoadingCategories) {
+      return const SizedBox.shrink();
+    }
+    return Column(
+      children:
+          categories.map((category) {
+            final categoryId = category['id'];
+            final films = categoryFilms[categoryId] ?? [];
+            final isLoading = isLoadingCategoryFilms[categoryId] ?? true;
+
+            return CategorySection(
+              category: category,
+              films: films,
+              isLoading: isLoading,
+              isDarkMode: themeProvider.isDarkMode,
+            );
+          }).toList(),
+    );
+  }
+}
+
+// Category Section
+class CategorySection extends StatelessWidget {
+  final dynamic category;
+  final List<dynamic> films;
+  final bool isLoading;
+  final bool isDarkMode;
+
+  const CategorySection({
+    super.key,
+    required this.category,
+    required this.films,
+    required this.isLoading,
+    required this.isDarkMode,
   });
 
-  factory IndexState.initial() => IndexState(
-    banners: [],
-    latestViewed: [],
-    isLoadingBanners: true,
-    isLoadingLatestViewed: true,
-  );
+  @override
+  Widget build(BuildContext context) {
+    final screenWidth = MediaQuery.of(context).size.width;
+    const horizontalPadding = 16.0 * 2;
+    const itemMargin = 12.0;
+    final itemWidth = (screenWidth - horizontalPadding - itemMargin) / 2;
+    final itemHeight = itemWidth * 1.5;
+    final sectionHeight = itemHeight + 40 + 8;
 
-  IndexState copyWith({
-    List<dynamic>? banners,
-    List<dynamic>? latestViewed,
-    bool? isLoadingBanners,
-    bool? isLoadingLatestViewed,
-    String? message,
-  }) => IndexState(
-    banners: banners ?? this.banners,
-    latestViewed: latestViewed ?? this.latestViewed,
-    isLoadingBanners: isLoadingBanners ?? this.isLoadingBanners,
-    isLoadingLatestViewed: isLoadingLatestViewed ?? this.isLoadingLatestViewed,
-    message: message ?? this.message,
-  );
+    appLogger.d(
+      'Category ${category['id']}: isLoading=$isLoading, films=${films.length}',
+    );
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 16.0, horizontal: 16.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                category['title_uz'] ?? 'Noma’lum',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                  color: isDarkMode ? Colors.white : Colors.grey[800],
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.chevron_right),
+                onPressed: () {
+                  Navigator.push(
+                    context,
+                    createSlideRoute(
+                      CategoriesScreen(initialCategory: category),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            height: sectionHeight,
+            child:
+                isLoading
+                    ? const Center(child: CircularProgressIndicator())
+                    : films.isEmpty
+                    ? const Center(
+                      child: Text(
+                        "Kontent mavjud emas",
+                        style: TextStyle(fontSize: 16, color: Colors.grey),
+                      ),
+                    )
+                    : ListView.builder(
+                      scrollDirection: Axis.horizontal,
+                      itemCount: films.length,
+                      itemExtent: itemWidth + itemMargin,
+                      cacheExtent: 9999, // TUZATILISHGA MUHTOJ: juda katta
+                      itemBuilder: (context, index) {
+                        return FilmItem(
+                          film: films[index],
+                          itemWidth: itemWidth,
+                          itemHeight: itemHeight,
+                        );
+                      },
+                    ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
-class IndexError extends IndexState {
-  final String message;
-  IndexError(this.message)
-    : super(
-        banners: [],
-        latestViewed: [],
-        isLoadingBanners: false,
-        isLoadingLatestViewed: false,
-      );
+// Film Item
+class FilmItem extends StatelessWidget {
+  final dynamic film;
+  final double itemWidth;
+  final double itemHeight;
+
+  const FilmItem({
+    super.key,
+    required this.film,
+    required this.itemWidth,
+    required this.itemHeight,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final files = film['files'] ?? [];
+    final imageUrl =
+        files.isNotEmpty
+            ? (files[0]['thumbnails'] != null &&
+                    files[0]['thumbnails']['small'] != null &&
+                    files[0]['thumbnails']['small']['src'] != null
+                ? files[0]['thumbnails']['small']['src']
+                : files[0]['link'] ?? 'https://placehold.co/320x180')
+            : 'https://placehold.co/320x180';
+    final title = film['name_uz'] ?? 'Noma’lum';
+    final year = film['year']?.toString() ?? '';
+    final genres = film['genres'] ?? [];
+    final genreName = genres.isNotEmpty ? genres[0]['name_uz'] ?? '' : '';
+    final filmId = film['id'];
+
+    return GestureDetector(
+      onTap: () {
+        Navigator.push(context, createSlideRoute(FilmScreen(filmId: filmId)));
+      },
+      child: Container(
+        margin: const EdgeInsets.only(right: 12),
+        width: itemWidth,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              height: itemHeight,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                image: DecorationImage(
+                  image: CachedNetworkImageProvider(
+                    imageUrl,
+                    cacheManager: filmImagesCacheManager,
+                  ),
+                  fit: BoxFit.cover,
+                ),
+              ),
+            ),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    year.isNotEmpty && genreName.isNotEmpty
+                        ? "$year · $genreName"
+                        : year.isNotEmpty
+                        ? year
+                        : genreName,
+                    style: const TextStyle(fontSize: 10, color: Colors.grey),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
-class IndexLoggedOut extends IndexState {
-  IndexLoggedOut()
-    : super(
-        banners: [],
-        latestViewed: [],
-        isLoadingBanners: false,
-        isLoadingLatestViewed: false,
-      );
+// GenreCard
+class GenreCard extends StatelessWidget {
+  final Map<String, dynamic> genre;
+  final VoidCallback onTap;
+
+  const GenreCard({super.key, required this.genre, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final imageUrl =
+        genre['photo'] != null
+            ? (genre['photo']['thumbnails'] != null &&
+                    genre['photo']['thumbnails']['small'] != null &&
+                    genre['photo']['thumbnails']['small']['src'] != null
+                ? genre['photo']['thumbnails']['small']['src']
+                : genre['photo']['link'] ?? 'https://placehold.co/305x200')
+            : 'https://placehold.co/305x200';
+    final name = genre['name_uz'] ?? 'Noma’lum';
+
+    return GestureDetector(
+      onTap: onTap,
+      child: Stack(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(12),
+            child: CachedNetworkImage(
+              imageUrl: imageUrl,
+              cacheManager: filmImagesCacheManager,
+              width: 305,
+              height: 200,
+              fit: BoxFit.cover,
+              placeholder:
+                  (context, url) =>
+                      const Center(child: CircularProgressIndicator()),
+              errorWidget: (context, url, error) {
+                appLogger.d('Genre rasm yuklash xatosi: $error');
+                return Container(
+                  width: 305,
+                  height: 200,
+                  color: Colors.grey[300],
+                  child: const Center(
+                    child: Text(
+                      'Rasmni yuklashda xato',
+                      style: TextStyle(color: Colors.grey),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          Container(
+            width: 305,
+            height: 200,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(12),
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  Colors.transparent,
+                  Colors.black.withOpacity(0.6), // TUZATILDI
+                ],
+              ),
+            ),
+          ),
+          Positioned(
+            bottom: 12,
+            left: 16,
+            child: Text(
+              name,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.bold,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }

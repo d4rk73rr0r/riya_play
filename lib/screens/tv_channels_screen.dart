@@ -1,590 +1,600 @@
-import 'package:better_player/better_player.dart';
-import 'package:cached_network_image/cached_network_image.dart';
+import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:provider/provider.dart';
-import 'package:riya_play/blocs/tv/tv_bloc.dart';
-import 'package:riya_play/services/api_service.dart';
-import 'package:riya_play/services/storage_service.dart';
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:flutter_cache_manager/flutter_cache_manager.dart';
+import 'package:riya_play/services/tv_api_service.dart';
+import 'package:riya_play/screens/video_player_screen.dart';
+import 'package:better_player/better_player.dart';
+import 'package:flutter/services.dart';
 import 'package:riya_play/theme_provider.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:android_intent_plus/android_intent.dart';
+import 'package:riya_play/utils/navigation.dart'; // createSlideRoute uchun import
+import 'package:riya_play/utils/image_cache_manager.dart';
 
-final customCacheManager = CacheManager(
+// TV kanal ma'lumotlari (JSON) uchun alohida kesh — rasm keshidan farqli
+final dataCacheManager = CacheManager(
   Config(
-    'tvChannelsCache',
-    stalePeriod: const Duration(days: 7),
-    maxNrOfCacheObjects: 100,
+    'tvDataCache',
+    stalePeriod: const Duration(minutes: 30),
+    maxNrOfCacheObjects: 50,
   ),
 );
 
-class TVChannelsScreen extends StatelessWidget {
+class TVChannelsScreen extends StatefulWidget {
   const TVChannelsScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final storage = StorageService();
-    final apiService = ApiService(storage);
-
-    return BlocProvider(
-      create: (_) => TVBloc(apiService)..add(FetchTVDataEvent()),
-      child: BlocBuilder<TVBloc, TVState>(
-        builder: (context, state) {
-          final themeProvider = context.watch<ThemeProvider>();
-          return Scaffold(
-            backgroundColor:
-                themeProvider.isDarkMode
-                    ? const Color(0xFF111827)
-                    : Colors.grey[100],
-            appBar: AppBar(
-              backgroundColor:
-                  themeProvider.isDarkMode
-                      ? const Color(0xFF1F2937)
-                      : Colors.white,
-              elevation: 2,
-              leading: IconButton(
-                icon: Icon(
-                  Icons.chevron_left,
-                  color:
-                      themeProvider.isDarkMode ? Colors.white : Colors.black87,
-                  size: 30,
-                ),
-                onPressed: () => Navigator.of(context).pop(),
-              ),
-              title: Text(
-                "TV Kanallar", // S.of(context).tvChannels o‘rniga
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  color:
-                      themeProvider.isDarkMode ? Colors.white : Colors.black87,
-                ),
-              ),
-            ),
-            body:
-                state.isLoading
-                    ? Center(
-                      child: CircularProgressIndicator(
-                        color:
-                            themeProvider.isDarkMode
-                                ? Colors.white
-                                : Colors.blue,
-                      ),
-                    )
-                    : state.channels.isEmpty
-                    ? const Center(child: Text("Kanallar mavjud emas"))
-                    : Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            "Kanallar soni: ${state.totalChannels}", // S.of(context).channelCount o‘rniga
-                            style: TextStyle(
-                              fontSize: 16,
-                              color:
-                                  themeProvider.isDarkMode
-                                      ? Colors.grey[400]
-                                      : Colors.grey,
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          SizedBox(
-                            height: 50,
-                            child: SingleChildScrollView(
-                              scrollDirection: Axis.horizontal,
-                              child: Row(
-                                children: [
-                                  Padding(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 4.0,
-                                    ),
-                                    child: ElevatedButton(
-                                      onPressed:
-                                          () => context.read<TVBloc>().add(
-                                            SelectCategoryEvent(null),
-                                          ),
-                                      style: ElevatedButton.styleFrom(
-                                        backgroundColor:
-                                            state.selectedCategoryId == null
-                                                ? Colors.blue[500]
-                                                : (themeProvider.isDarkMode
-                                                    ? const Color(0xFF1F2937)
-                                                    : Colors.grey[200]),
-                                        foregroundColor:
-                                            state.selectedCategoryId == null
-                                                ? Colors.white
-                                                : (themeProvider.isDarkMode
-                                                    ? Colors.white
-                                                    : Colors.black87),
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 16,
-                                          vertical: 10,
-                                        ),
-                                        shape: RoundedRectangleBorder(
-                                          borderRadius: BorderRadius.circular(
-                                            20,
-                                          ),
-                                        ),
-                                      ),
-                                      child: Text(
-                                        "Hammasi",
-                                      ), // S.of(context).all o‘rniga
-                                    ),
-                                  ),
-                                  ...state.categories.map(
-                                    (category) => Padding(
-                                      padding: const EdgeInsets.symmetric(
-                                        horizontal: 4.0,
-                                      ),
-                                      child: ElevatedButton(
-                                        onPressed:
-                                            () => context.read<TVBloc>().add(
-                                              SelectCategoryEvent(
-                                                category['id'],
-                                              ),
-                                            ),
-                                        style: ElevatedButton.styleFrom(
-                                          backgroundColor:
-                                              state.selectedCategoryId ==
-                                                      category['id']
-                                                  ? Colors.blue[500]
-                                                  : (themeProvider.isDarkMode
-                                                      ? const Color(0xFF1F2937)
-                                                      : Colors.grey[200]),
-                                          foregroundColor:
-                                              state.selectedCategoryId ==
-                                                      category['id']
-                                                  ? Colors.white
-                                                  : (themeProvider.isDarkMode
-                                                      ? Colors.white
-                                                      : Colors.black87),
-                                          padding: const EdgeInsets.symmetric(
-                                            horizontal: 16,
-                                            vertical: 10,
-                                          ),
-                                          shape: RoundedRectangleBorder(
-                                            borderRadius: BorderRadius.circular(
-                                              20,
-                                            ),
-                                          ),
-                                        ),
-                                        child: Text(category['title_uz']),
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          const SizedBox(height: 16),
-                          Expanded(
-                            child: GridView.builder(
-                              controller:
-                                  context.read<TVBloc>().scrollController,
-                              gridDelegate:
-                                  SliverGridDelegateWithFixedCrossAxisCount(
-                                    crossAxisCount:
-                                        MediaQuery.of(context).orientation ==
-                                                Orientation.portrait
-                                            ? 2
-                                            : 3,
-                                    crossAxisSpacing: 12,
-                                    mainAxisSpacing: 12,
-                                    childAspectRatio:
-                                        MediaQuery.of(context).size.width /
-                                        (MediaQuery.of(context).size.height *
-                                            0.4),
-                                  ),
-                              itemCount:
-                                  state.channels.length +
-                                  (state.isLoadingMore ? 1 : 0),
-                              itemBuilder: (context, index) {
-                                if (index == state.channels.length)
-                                  return const Center(
-                                    child: CircularProgressIndicator(),
-                                  );
-                                final channel = state.channels[index];
-                                return Container(
-                                  decoration: BoxDecoration(
-                                    borderRadius: BorderRadius.circular(12),
-                                    color:
-                                        themeProvider.isDarkMode
-                                            ? const Color(0xFF1F2937)
-                                            : Colors.white,
-                                    boxShadow: [
-                                      BoxShadow(
-                                        color: Colors.black.withOpacity(0.1),
-                                        blurRadius: 6,
-                                        offset: const Offset(0, 2),
-                                      ),
-                                    ],
-                                  ),
-                                  child: Material(
-                                    color: Colors.transparent,
-                                    child: InkWell(
-                                      borderRadius: BorderRadius.circular(12),
-                                      onTap:
-                                          () => context.read<TVBloc>().add(
-                                            PlayChannelEvent(
-                                              channel['url'],
-                                              channel['title_uz'],
-                                            ),
-                                          ),
-                                      child: Padding(
-                                        padding: const EdgeInsets.all(8.0),
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            CachedNetworkImage(
-                                              imageUrl:
-                                                  channel['image'] ??
-                                                  'https://placehold.co/150x150',
-                                              cacheManager: customCacheManager,
-                                              width: double.infinity,
-                                              height: 80,
-                                              fit: BoxFit.cover,
-                                              placeholder:
-                                                  (context, url) => Container(
-                                                    height: 80,
-                                                    color:
-                                                        themeProvider.isDarkMode
-                                                            ? const Color(
-                                                              0xFF374151,
-                                                            )
-                                                            : Colors.grey[300],
-                                                    child: const Center(
-                                                      child:
-                                                          CircularProgressIndicator(),
-                                                    ),
-                                                  ),
-                                              errorWidget:
-                                                  (
-                                                    context,
-                                                    url,
-                                                    error,
-                                                  ) => Container(
-                                                    height: 80,
-                                                    color:
-                                                        themeProvider.isDarkMode
-                                                            ? const Color(
-                                                              0xFF374151,
-                                                            )
-                                                            : Colors.grey[300],
-                                                    child: const Center(
-                                                      child: Icon(
-                                                        Icons.broken_image,
-                                                        size: 40,
-                                                      ),
-                                                    ),
-                                                  ),
-                                            ),
-                                            const SizedBox(height: 8),
-                                            Text(
-                                              _shortenText(
-                                                channel['title_uz'] ??
-                                                    "Noma'lum", // S.of(context).unknown o‘rniga
-                                              ),
-                                              style: TextStyle(
-                                                fontSize: 14,
-                                                fontWeight: FontWeight.w500,
-                                                color:
-                                                    themeProvider.isDarkMode
-                                                        ? Colors.white
-                                                        : Colors.black87,
-                                              ),
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                            ),
-                                          ],
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-          );
-        },
-      ),
-    );
-  }
-
-  String _shortenText(String text, {int maxLength = 20}) =>
-      text.length <= maxLength ? text : '${text.substring(0, maxLength)}...';
+  State<TVChannelsScreen> createState() => _TVChannelsScreenState();
 }
 
-class TVBloc extends Bloc<TVEvent, TVState> {
-  final ApiService apiService;
-  final ScrollController scrollController = ScrollController();
-
-  TVBloc(this.apiService) : super(TVState.initial()) {
-    scrollController.addListener(_onScroll);
-
-    on<FetchTVDataEvent>((event, emit) async {
-      emit(state.copyWith(isLoading: true));
-      try {
-        final categoryData = await apiService.getTVCategories();
-        final channelData = await apiService.getTVChannels(page: state.page);
-        emit(
-          state.copyWith(
-            categories: categoryData,
-            channels: channelData['tv_channels'] ?? [],
-            totalChannels: channelData['count'] ?? 0,
-            isLoading: false,
-            hasMoreChannels: channelData['tv_channels'].length == 24,
-          ),
-        );
-      } catch (e) {
-        emit(state.copyWith(isLoading: false));
-      }
-    });
-
-    on<SelectCategoryEvent>((event, emit) async {
-      emit(
-        state.copyWith(
-          selectedCategoryId: event.categoryId,
-          isLoading: true,
-          channels: [],
-          page: 1,
-        ),
-      );
-      try {
-        final channelData = await apiService.getTVChannels(
-          page: 1,
-          categoryId: event.categoryId,
-        );
-        emit(
-          state.copyWith(
-            channels: channelData['tv_channels'] ?? [],
-            totalChannels: channelData['count'] ?? 0,
-            isLoading: false,
-            hasMoreChannels: channelData['tv_channels'].length == 24,
-          ),
-        );
-      } catch (e) {
-        emit(state.copyWith(isLoading: false));
-      }
-    });
-
-    on<FetchMoreChannelsEvent>((event, emit) async {
-      if (state.isLoadingMore || !state.hasMoreChannels) return;
-      emit(state.copyWith(isLoadingMore: true));
-      try {
-        final channelData = await apiService.getTVChannels(
-          page: state.page + 1,
-          categoryId: state.selectedCategoryId,
-        );
-        emit(
-          state.copyWith(
-            channels: [...state.channels, ...channelData['tv_channels'] ?? []],
-            page: state.page + 1,
-            isLoadingMore: false,
-            hasMoreChannels: channelData['tv_channels'].length == 24,
-          ),
-        );
-      } catch (e) {
-        emit(state.copyWith(isLoadingMore: false));
-      }
-    });
-
-    on<PlayChannelEvent>(
-      (event, emit) => Navigator.push(
-        event.context,
-        MaterialPageRoute(
-          builder:
-              (_) => ChannelPlayerScreen(url: event.url, title: event.title),
-        ),
-      ),
-    );
-  }
-
-  void _onScroll() {
-    if (scrollController.position.pixels >=
-            scrollController.position.maxScrollExtent - 100 &&
-        !state.isLoadingMore &&
-        state.hasMoreChannels) {
-      add(FetchMoreChannelsEvent());
-    }
-  }
-
-  @override
-  Future<void> close() {
-    scrollController.dispose();
-    return super.close();
-  }
-}
-
-sealed class TVEvent {
-  BuildContext get context => BuildContext();
-}
-
-class FetchTVDataEvent extends TVEvent {}
-
-class SelectCategoryEvent extends TVEvent {
-  final String? categoryId;
-  SelectCategoryEvent(this.categoryId);
-}
-
-class FetchMoreChannelsEvent extends TVEvent {}
-
-class PlayChannelEvent extends TVEvent {
-  final String url;
-  final String title;
-  @override
-  final BuildContext context;
-
-  PlayChannelEvent(this.url, this.title, {this.context = const BuildContext()});
-}
-
-class TVState {
-  final List<dynamic> categories;
-  final List<dynamic> channels;
-  final String? selectedCategoryId;
-  final bool isLoading;
-  final bool isLoadingMore;
-  final bool hasMoreChannels;
-  final int totalChannels;
-  final int page;
-
-  TVState({
-    required this.categories,
-    required this.channels,
-    this.selectedCategoryId,
-    required this.isLoading,
-    required this.isLoadingMore,
-    required this.hasMoreChannels,
-    required this.totalChannels,
-    required this.page,
-  });
-
-  factory TVState.initial() => TVState(
-    categories: [],
-    channels: [],
-    isLoading: true,
-    isLoadingMore: false,
-    hasMoreChannels: true,
-    totalChannels: 0,
-    page: 1,
-  );
-
-  TVState copyWith({
-    List<dynamic>? categories,
-    List<dynamic>? channels,
-    String? selectedCategoryId,
-    bool? isLoading,
-    bool? isLoadingMore,
-    bool? hasMoreChannels,
-    int? totalChannels,
-    int? page,
-  }) => TVState(
-    categories: categories ?? this.categories,
-    channels: channels ?? this.channels,
-    selectedCategoryId: selectedCategoryId ?? this.selectedCategoryId,
-    isLoading: isLoading ?? this.isLoading,
-    isLoadingMore: isLoadingMore ?? this.isLoadingMore,
-    hasMoreChannels: hasMoreChannels ?? this.hasMoreChannels,
-    totalChannels: totalChannels ?? this.totalChannels,
-    page: page ?? this.page,
-  );
-}
-
-class ChannelPlayerScreen extends StatefulWidget {
-  final String url;
-  final String title;
-
-  const ChannelPlayerScreen({
-    required this.url,
-    required this.title,
-    super.key,
-  });
-
-  @override
-  State<ChannelPlayerScreen> createState() => _ChannelPlayerScreenState();
-}
-
-class _ChannelPlayerScreenState extends State<ChannelPlayerScreen> {
-  late BetterPlayerController _betterPlayerController;
-  bool _isDisposed = false;
+class _TVChannelsScreenState extends State<TVChannelsScreen>
+    with TickerProviderStateMixin {
+  TabController? _tabController;
+  List<dynamic> categories = [];
+  Map<String, List<dynamic>> channelsByCategory = {};
+  String selectedSource = "SalomTV";
+  bool _isLoading = true;
+  int totalChannels = 0;
 
   @override
   void initState() {
     super.initState();
-    _initializePlayer();
-    WakelockPlus.enable();
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
+    _loadTVData();
   }
 
-  void _initializePlayer() {
-    _betterPlayerController = BetterPlayerController(
-      BetterPlayerConfiguration(
-        autoPlay: true,
-        fit: BoxFit.contain,
-        fullScreenByDefault: true,
-        deviceOrientationsAfterFullScreen: [
-          DeviceOrientation.portraitUp,
-          DeviceOrientation.landscapeLeft,
-          DeviceOrientation.landscapeRight,
-        ],
-        deviceOrientationsOnFullScreen: [
-          DeviceOrientation.landscapeLeft,
-          DeviceOrientation.landscapeRight,
-        ],
-        autoDetectFullscreenDeviceOrientation: true,
-        controlsConfiguration: const BetterPlayerControlsConfiguration(
-          enableFullscreen: true,
-          enablePlayPause: true,
-          enableMute: true,
-          enableSkips: false,
-        ),
-        errorBuilder:
-            (context, errorMessage) => Center(
-              child: Text(
-                "Video xatoligi: $errorMessage", // S.of(context).videoError o‘rniga
-                style: const TextStyle(color: Colors.red),
+  Future<void> _loadTVData() async {
+    if (!mounted) return;
+
+    setState(() => _isLoading = true);
+
+    try {
+      final categoryCacheKey = 'categories_$selectedSource';
+      final cachedCategories = await dataCacheManager.getFileFromCache(
+        categoryCacheKey,
+      );
+
+      if (cachedCategories != null) {
+        categories = jsonDecode(await cachedCategories.file.readAsString());
+      } else {
+        categories = await TVApiService.getTVCategories(selectedSource);
+        await dataCacheManager.putFile(
+          categoryCacheKey,
+          utf8.encode(jsonEncode(categories)),
+          fileExtension: 'json',
+        );
+      }
+
+      await _loadChannelsForAllCategories();
+
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _tabController?.dispose();
+        _tabController = TabController(
+          length: categories.isEmpty ? 1 : categories.length + 1,
+          vsync: this,
+        );
+        _tabController!.addListener(() {
+          if (_tabController!.indexIsChanging) return;
+          setState(() {});
+        });
+      });
+
+      _precacheImages();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isLoading = false);
+        _showErrorSnackBar("TV ma'lumotlarini yuklashda xato: $e");
+      }
+    }
+  }
+
+  Future<void> _refresh() async {
+    setState(() {
+      categories.clear();
+      channelsByCategory.clear();
+      _isLoading = true;
+      _tabController?.dispose();
+      _tabController = null;
+    });
+    await _loadTVData();
+  }
+
+  Future<void> _loadChannelsForAllCategories() async {
+    channelsByCategory['all'] = await _fetchChannels(null);
+    totalChannels = channelsByCategory['all']!.length;
+
+    if (categories.isNotEmpty) {
+      final futures = categories.map(
+        (category) => _fetchChannels(category['id']),
+      );
+      final results = await Future.wait(futures);
+      for (var i = 0; i < categories.length; i++) {
+        channelsByCategory[categories[i]['id']] = results[i];
+      }
+    }
+  }
+
+  Future<List<dynamic>> _fetchChannels(String? categoryId) async {
+    final channelCacheKey =
+        'channels_${selectedSource}_page_1${categoryId ?? "all"}';
+    Map<String, dynamic> channelData;
+
+    if (selectedSource == "SalomTV" || selectedSource == "BizTV") {
+      channelData = await TVApiService.getTVChannels(
+        source: selectedSource,
+        page: 1,
+        categoryId: categoryId,
+        fetchAll: selectedSource == "BizTV",
+      );
+    } else {
+      final cachedChannels = await dataCacheManager.getFileFromCache(
+        channelCacheKey,
+      );
+      if (cachedChannels != null) {
+        channelData = jsonDecode(await cachedChannels.file.readAsString());
+      } else {
+        channelData = await TVApiService.getTVChannels(
+          source: selectedSource,
+          page: 1,
+          categoryId: categoryId,
+        );
+        await dataCacheManager.putFile(
+          channelCacheKey,
+          utf8.encode(jsonEncode(channelData)),
+          fileExtension: 'json',
+        );
+      }
+    }
+    return channelData['tv_channels'] ?? [];
+  }
+
+  void _precacheImages() {
+    for (var channels in channelsByCategory.values) {
+      for (var channel in channels.take(10)) {
+        precacheImage(
+          CachedNetworkImageProvider(
+            channel['image'] ?? 'https://placehold.co/150x150',
+            cacheManager: filmImagesCacheManager,
+          ),
+          context,
+          onError: (_, __) {},
+        );
+      }
+    }
+  }
+
+  Future<void> _playChannel(
+    String channelId,
+    String title,
+    String source,
+  ) async {
+    String? videoUrl;
+    try {
+      if (source == "SalomTV" || source == "BizTV") {
+        videoUrl = channelId; // For BizTV, channelId is the URL
+      } else if (source == "SpecUZ") {
+        final channelDetails = await TVApiService.getChannelDetails(
+          source: source,
+          channelId: channelId,
+        );
+        videoUrl =
+            channelDetails['channel_stream_all'] ??
+            channelDetails['test_stream'];
+      }
+      if (videoUrl == null) throw Exception("Strim URL topilmadi");
+    } catch (e) {
+      _showErrorSnackBar("Strim URL'ni olishda xato: $e");
+      return;
+    }
+
+    // Foydalanuvchiga ichki yoki tashqi pleerni tanlash imkonini berish
+    final selectedPlayer = await showDialog<String>(
+      context: context,
+      builder:
+          (context) => AlertDialog(
+            title: const Text("Pleerni tanlang"),
+            content: SizedBox(
+              width: double.maxFinite,
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.play_circle_filled),
+                    title: const Text("Ichki pleer: Better Player"),
+                    onTap: () => Navigator.pop(context, 'better_player'),
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.video_library),
+                    title: const Text("Tashqi pleer bilan ochish"),
+                    onTap: () => Navigator.pop(context, 'external'),
+                  ),
+                ],
               ),
             ),
-      ),
-      betterPlayerDataSource: BetterPlayerDataSource(
-        BetterPlayerDataSourceType.network,
-        widget.url,
-        liveStream: true,
-        notificationConfiguration: BetterPlayerNotificationConfiguration(
-          showNotification: true,
-          title: widget.title,
-          author: "SalomTV",
-        ),
-      ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text("Bekor qilish"),
+              ),
+            ],
+          ),
     );
+
+    if (selectedPlayer == null) return;
+
+    if (selectedPlayer == 'better_player') {
+      // Ichki pleer bilan ochish
+      if (mounted) {
+        Navigator.push(
+          context,
+          createSlideRoute(
+            // PageRouteBuilder bilan o‘tish
+            VideoPlayerScreen(
+              videoUrl: videoUrl,
+              title: title,
+              liveStream: true,
+              autoPlay: true,
+              fullScreenByDefault: true,
+              deviceOrientationsOnFullScreen: const [
+                DeviceOrientation.landscapeLeft,
+                DeviceOrientation.landscapeRight,
+              ],
+              deviceOrientationsAfterFullScreen: const [
+                DeviceOrientation.portraitUp,
+                DeviceOrientation.portraitDown,
+              ],
+              autoDetectFullscreenDeviceOrientation: true,
+              controlsConfiguration: const BetterPlayerControlsConfiguration(
+                enableFullscreen: true,
+                enablePlayPause: true,
+                enableMute: true,
+                enableSkips: false,
+              ),
+              notificationConfiguration: BetterPlayerNotificationConfiguration(
+                showNotification: false,
+                title: title,
+                author: source,
+              ),
+            ),
+          ),
+        );
+      }
+    } else if (selectedPlayer == 'external') {
+      // Tashqi pleer bilan ochish
+      try {
+        final intent = AndroidIntent(
+          action: 'action_view',
+          data: videoUrl,
+          type: 'video/*',
+        );
+        await intent.launch();
+      } catch (e) {
+        if (mounted) {
+          _showErrorSnackBar("Tashqi pleerni ochishda xato: $e");
+        }
+      }
+    }
+  }
+
+  void _onSourceChanged(String? newSource) {
+    if (newSource != null && newSource != selectedSource && mounted) {
+      setState(() {
+        selectedSource = newSource;
+        categories.clear();
+        channelsByCategory.clear();
+        _isLoading = true;
+        _tabController?.dispose();
+        _tabController = null;
+      });
+      _loadTVData();
+    }
+  }
+
+  String _shortenText(String text, {int maxLength = 20}) =>
+      text.length <= maxLength ? text : '${text.substring(0, maxLength)}...';
+
+  void _showErrorSnackBar(String message) {
+    if (mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    }
+  }
+
+  int _getCurrentCategoryChannelCount() {
+    final currentIndex = _tabController?.index ?? 0;
+    if (currentIndex == 0 || categories.isEmpty) {
+      return totalChannels;
+    } else {
+      final categoryId = categories[currentIndex - 1]['id'];
+      return channelsByCategory[categoryId]?.length ?? 0;
+    }
   }
 
   @override
   void dispose() {
-    if (!_isDisposed) {
-      _betterPlayerController.dispose();
-      _isDisposed = true;
-    }
-    WakelockPlus.disable();
+    _tabController?.dispose();
+    SystemChrome.setPreferredOrientations([
+      DeviceOrientation.portraitUp,
+      DeviceOrientation.portraitDown,
+    ]);
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final themeProvider = context.watch<ThemeProvider>();
+    final themeProvider = Provider.of<ThemeProvider>(context);
+
     return Scaffold(
       backgroundColor:
           themeProvider.isDarkMode ? const Color(0xFF111827) : Colors.grey[100],
       appBar: AppBar(
         backgroundColor:
             themeProvider.isDarkMode ? const Color(0xFF1F2937) : Colors.white,
-        title: Text(widget.title),
+        elevation: 2,
+        title: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              "TV Kanallar",
+              style: TextStyle(
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+                color: themeProvider.isDarkMode ? Colors.white : Colors.black87,
+              ),
+            ),
+            DropdownButton<String>(
+              value: selectedSource,
+              items:
+                  TVApiService.baseUrls.keys
+                      .map(
+                        (source) => DropdownMenuItem(
+                          value: source,
+                          child: Text(source),
+                        ),
+                      )
+                      .toList(),
+              onChanged: _onSourceChanged,
+            ),
+          ],
+        ),
       ),
-      body: BetterPlayer(controller: _betterPlayerController),
+      body:
+          _isLoading
+              ? Center(
+                child: CircularProgressIndicator(
+                  color: themeProvider.isDarkMode ? Colors.white : Colors.blue,
+                ),
+              )
+              : channelsByCategory.isEmpty
+              ? const Center(child: Text("Kanallar mavjud emas"))
+              : _tabController == null
+              ? const Center(child: Text("Tablarni yuklashda xato"))
+              : RefreshIndicator(
+                onRefresh: _refresh,
+                child: SingleChildScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8.0,
+                      vertical: 8.0,
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (categories.isNotEmpty)
+                          SizedBox(
+                            height: 40,
+                            child: ListView(
+                              scrollDirection: Axis.horizontal,
+                              physics: const BouncingScrollPhysics(),
+                              children: [
+                                _buildCategoryButton(
+                                  text: "Barchasi",
+                                  isSelected: _tabController?.index == 0,
+                                  onTap: () {
+                                    _tabController?.animateTo(0);
+                                    setState(() {});
+                                  },
+                                ),
+                                ...categories.asMap().entries.map(
+                                  (entry) => _buildCategoryButton(
+                                    text:
+                                        entry.value['title_uz']?.length <= 20
+                                            ? entry.value['title_uz']
+                                            : '${entry.value['title_uz']?.substring(0, 17)}...',
+                                    isSelected:
+                                        _tabController?.index == entry.key + 1,
+                                    onTap: () {
+                                      _tabController?.animateTo(entry.key + 1);
+                                      setState(() {});
+                                    },
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        const SizedBox(height: 8),
+                        Text(
+                          "Kanallar soni: ${_getCurrentCategoryChannelCount()} ta",
+                          style: TextStyle(
+                            fontSize: 16,
+                            color:
+                                themeProvider.isDarkMode
+                                    ? Colors.grey[400]
+                                    : Colors.grey,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        SizedBox(
+                          height: MediaQuery.of(context).size.height * 0.7,
+                          child: TabBarView(
+                            controller: _tabController,
+                            children: [
+                              _buildChannelGrid('all'),
+                              if (categories.isNotEmpty)
+                                ...categories.map(
+                                  (category) =>
+                                      _buildChannelGrid(category['id']),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+    );
+  }
+
+  Widget _buildCategoryButton({
+    required String text,
+    required bool isSelected,
+    required VoidCallback onTap,
+  }) {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    return Padding(
+      padding: const EdgeInsets.only(right: 16.0),
+      child: GestureDetector(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 300),
+          padding: const EdgeInsets.symmetric(horizontal: 8.0, vertical: 4.0),
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(
+                color: isSelected ? Colors.blue[500]! : Colors.transparent,
+                width: 2.0,
+              ),
+            ),
+          ),
+          child: Text(
+            text,
+            style: TextStyle(
+              fontSize: 14,
+              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+              color:
+                  isSelected
+                      ? (themeProvider.isDarkMode
+                          ? Colors.white
+                          : Colors.black87)
+                      : (themeProvider.isDarkMode
+                          ? Colors.grey[400]
+                          : Colors.grey),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildChannelGrid(String categoryId) {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final channels = channelsByCategory[categoryId] ?? [];
+    return GridView.builder(
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount:
+            MediaQuery.of(context).orientation == Orientation.portrait ? 2 : 3,
+        crossAxisSpacing: 12,
+        mainAxisSpacing: 12,
+        childAspectRatio:
+            MediaQuery.of(context).size.width /
+            (MediaQuery.of(context).size.height * 0.4),
+      ),
+      cacheExtent: 500,
+      itemCount: channels.length,
+      itemBuilder: (context, index) {
+        final channel = channels[index];
+        return Container(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            color:
+                themeProvider.isDarkMode
+                    ? const Color(0xFF1F2937)
+                    : Colors.white,
+            boxShadow: [
+              BoxShadow(
+                color: Colors.black.withOpacity(0.1),
+                blurRadius: 6,
+                offset: const Offset(0, 2),
+              ),
+            ],
+          ),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap:
+                  () => _playChannel(
+                    selectedSource == "SalomTV" || selectedSource == "BizTV"
+                        ? channel['url']
+                        : channel['id'],
+                    channel['title_uz'],
+                    selectedSource,
+                  ),
+              child: Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    CachedNetworkImage(
+                      imageUrl:
+                          channel['image'] ?? 'https://placehold.co/150x150',
+                      cacheManager: filmImagesCacheManager,
+                      width: double.infinity,
+                      height: 80,
+                      fit: BoxFit.cover,
+                      placeholder:
+                          (context, url) => Container(
+                            height: 80,
+                            color:
+                                themeProvider.isDarkMode
+                                    ? const Color(0xFF374151)
+                                    : Colors.grey[300],
+                            child: const Center(
+                              child: CircularProgressIndicator(),
+                            ),
+                          ),
+                      errorWidget:
+                          (context, url, error) => Container(
+                            height: 80,
+                            color:
+                                themeProvider.isDarkMode
+                                    ? const Color(0xFF374151)
+                                    : Colors.grey[300],
+                            child: const Center(
+                              child: Icon(Icons.broken_image, size: 40),
+                            ),
+                          ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _shortenText(channel['title_uz'] ?? 'Noma\'lum'),
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w500,
+                        color:
+                            themeProvider.isDarkMode
+                                ? Colors.white
+                                : Colors.black87,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }

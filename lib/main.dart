@@ -1,18 +1,32 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:provider/provider.dart';
-import 'package:riya_play/blocs/auth/auth_bloc.dart';
 import 'package:riya_play/screens/auth_screen.dart';
 import 'package:riya_play/screens/index_screen.dart';
-import 'package:riya_play/screens/search_screen.dart';
+import 'package:riya_play/screens/catalog_screen.dart';
 import 'package:riya_play/screens/tv_channels_screen.dart';
-import 'package:riya_play/services/api_service.dart';
-import 'package:riya_play/services/storage_service.dart';
+import 'package:riya_play/screens/favorites_screen.dart';
+import 'package:riya_play/screens/profile_screen.dart';
+import 'package:riya_play/services/download_manager.dart';
+import 'package:riya_play/services/update_service.dart';
 import 'package:riya_play/theme_provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_iconly/flutter_iconly.dart';
+// ignore: depend_on_referenced_packages
+import 'package:flutter_native_splash/flutter_native_splash.dart';
+import 'package:riya_play/utils/app_logger.dart';
 
-void main() {
-  WidgetsFlutterBinding.ensureInitialized();
+void main() async {
+  WidgetsBinding widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
+  FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
+  await SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+    DeviceOrientation.portraitDown,
+  ]);
+  // Yuklashlar ro'yxati ekran ochilishidan oldin tiklanadi, aks holda
+  // "Yuklab olishlar" bir zumga bo'sh ko'rinib qoladi.
+  await DownloadManager.instance.restore();
   runApp(
     MultiProvider(
       providers: [ChangeNotifierProvider(create: (_) => ThemeProvider())],
@@ -21,74 +35,89 @@ void main() {
   );
 }
 
-class RiyaPlayApp extends StatelessWidget {
+class RiyaPlayApp extends StatefulWidget {
   const RiyaPlayApp({super.key});
 
-  Future<String?> _checkAuthToken(StorageService storage) async {
-    return await storage.getToken();
+  @override
+  State<RiyaPlayApp> createState() => _RiyaPlayAppState();
+}
+
+class _RiyaPlayAppState extends State<RiyaPlayApp> {
+  @override
+  void initState() {
+    super.initState();
+    initialization();
+  }
+
+  void initialization() async {
+    try {
+      final themeProvider = Provider.of<ThemeProvider>(context, listen: false);
+      await Future.wait([
+        SharedPreferences.getInstance().then(
+          (prefs) => prefs.getString('auth_token'),
+        ),
+        Future.doWhile(() async {
+          await Future.delayed(const Duration(milliseconds: 100));
+          return !themeProvider.isInitialized;
+        }),
+        Future.delayed(const Duration(milliseconds: 500)),
+      ]);
+    } catch (e) {
+      appLogger.d('Initialization error: $e');
+    } finally {
+      if (mounted) {
+        FlutterNativeSplash.remove();
+      }
+    }
+  }
+
+  Future<String?> _checkAuthToken() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString('auth_token');
   }
 
   @override
   Widget build(BuildContext context) {
     final themeProvider = Provider.of<ThemeProvider>(context);
-    final storage = StorageService();
-    final apiService = ApiService(storage);
 
-    return MultiBlocProvider(
-      providers: [BlocProvider(create: (_) => AuthBloc(apiService, storage))],
-      child: MaterialApp(
-        title: 'Riya Play',
-        debugShowCheckedModeBanner: false,
-        theme: _buildLightTheme(),
-        darkTheme: _buildDarkTheme(),
-        themeMode: themeProvider.isDarkMode ? ThemeMode.dark : ThemeMode.light,
-        builder: (context, child) {
-          return MediaQuery(
-            data: MediaQuery.of(
-              context,
-            ).copyWith(textScaleFactor: 1.0, boldText: false),
-            child: child!,
-          );
-        },
-        home: FutureBuilder<String?>(
-          future: _checkAuthToken(storage),
-          builder: (context, snapshot) {
-            if (snapshot.connectionState == ConnectionState.waiting) {
-              return const Scaffold(
-                body: Center(child: CircularProgressIndicator()),
-              );
-            }
-            if (snapshot.hasData && snapshot.data!.isNotEmpty) {
-              return const MainScreen();
-            }
-            return const AuthScreen();
-          },
-        ),
+    if (!themeProvider.isInitialized) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    SystemChrome.setSystemUIOverlayStyle(
+      const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+        statusBarBrightness: Brightness.dark,
       ),
     );
-  }
 
-  ThemeData _buildLightTheme() {
-    final baseTheme = ThemeData.light();
-    return baseTheme.copyWith(
-      colorScheme: baseTheme.colorScheme.copyWith(primary: Colors.blue),
-      scaffoldBackgroundColor: Colors.grey[100],
-      textTheme: GoogleFonts.poppinsTextTheme(
-        baseTheme.textTheme.copyWith(
-          displayLarge: const TextStyle(fontSize: 24.0, color: Colors.black87),
-          displayMedium: const TextStyle(fontSize: 20.0, color: Colors.black87),
-          bodyLarge: const TextStyle(fontSize: 14.0, color: Colors.black87),
-          bodyMedium: const TextStyle(fontSize: 12.0, color: Colors.black87),
-          labelLarge: const TextStyle(fontSize: 14.0, color: Colors.black87),
-        ),
-      ),
-      iconTheme: const IconThemeData(color: Colors.black87, size: 24.0),
-      appBarTheme: AppBarTheme(
-        titleTextStyle: GoogleFonts.poppins(
-          fontSize: 20,
-          fontWeight: FontWeight.w500,
-          color: Colors.black87,
-        ),
+    return MaterialApp(
+      title: 'RiyaPlay',
+      debugShowCheckedModeBanner: false,
+      theme: _buildDarkTheme(),
+      darkTheme: _buildDarkTheme(),
+      themeMode: ThemeMode.dark,
+      // Routes sectioni o'chirildi, chunki endi kerak emas
+      builder: (context, child) {
+        return MediaQuery(
+          data: MediaQuery.of(
+            context,
+          ).copyWith(textScaler: const TextScaler.linear(1.0), boldText: false),
+          child: child!,
+        );
+      },
+      home: FutureBuilder<String?>(
+        future: _checkAuthToken(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasData && snapshot.data!.isNotEmpty) {
+            return const MainScreen();
+          }
+          return const AuthScreen();
+        },
       ),
     );
   }
@@ -96,7 +125,10 @@ class RiyaPlayApp extends StatelessWidget {
   ThemeData _buildDarkTheme() {
     final baseTheme = ThemeData.dark();
     return baseTheme.copyWith(
-      colorScheme: baseTheme.colorScheme.copyWith(primary: Colors.blue),
+      colorScheme: baseTheme.colorScheme.copyWith(
+        primary: ThemeProvider.brandPinkLight,
+        secondary: ThemeProvider.brandPurple,
+      ),
       scaffoldBackgroundColor: const Color(0xFF111827),
       textTheme: GoogleFonts.poppinsTextTheme(
         baseTheme.textTheme.copyWith(
@@ -126,20 +158,61 @@ class MainScreen extends StatefulWidget {
   State<MainScreen> createState() => _MainScreenState();
 }
 
-class _MainScreenState extends State<MainScreen> {
+class _MainScreenState extends State<MainScreen>
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
+  late TabController _tabController;
   int _selectedIndex = 0;
-
   final List<Widget> _screens = [
     const IndexScreen(),
     const TVChannelsScreen(),
-    const SearchScreen(),
-    const Center(child: Text("Profil ekrani (Keyinroq qo'shiladi)")),
+    const CatalogScreen(),
+    const FavoritesScreen(),
+    const ProfileScreen(),
   ];
 
-  void _onItemTapped(int index) {
-    setState(() {
-      _selectedIndex = index;
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // Yangilanish tekshiruvi bosh ekran chizilgandan keyin — ochilishni
+    // sekinlashtirmaydi va xato bo'lsa jim o'tadi.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) UpdateService.checkUpdate(context);
     });
+    _tabController = TabController(length: _screens.length, vsync: this);
+    _tabController.addListener(() {
+      if (_tabController.index != _selectedIndex) {
+        setState(() {
+          _selectedIndex = _tabController.index;
+        });
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed && mounted) {
+      setState(() {
+        _selectedIndex = _tabController.index;
+      });
+    }
+  }
+
+  void _onItemTapped(int index) {
+    if (_selectedIndex != index) {
+      setState(() {
+        _selectedIndex = index;
+        _tabController.animateTo(index);
+      });
+    }
   }
 
   @override
@@ -147,37 +220,230 @@ class _MainScreenState extends State<MainScreen> {
     final themeProvider = Provider.of<ThemeProvider>(context);
 
     return Scaffold(
-      body: _screens[_selectedIndex],
-      bottomNavigationBar: BottomNavigationBar(
-        items: [
-          BottomNavigationBarItem(
-            icon: const Icon(Icons.home),
-            label: "Uy", // S.of(context).home o‘rniga
+      body: TabBarView(
+        controller: _tabController,
+        physics: const BouncingScrollPhysics(),
+        children:
+            _screens.map((screen) => KeepAliveWrapper(child: screen)).toList(),
+      ),
+      bottomNavigationBar: SafeArea(
+        child: Container(
+          decoration: BoxDecoration(
+            color: themeProvider.cardColor,
+            boxShadow: [
+              BoxShadow(
+                color: themeProvider.shadowColor,
+                blurRadius: 8,
+                offset: const Offset(0, -2),
+              ),
+            ],
           ),
-          BottomNavigationBarItem(
-            icon: const Icon(Icons.tv),
-            label: "TV", // S.of(context).tv o‘rniga
+          child: Stack(
+            alignment: Alignment.topCenter,
+            children: [
+              BottomNavigationBar(
+                currentIndex: _selectedIndex,
+                onTap: _onItemTapped,
+                selectedItemColor: themeProvider.accentColor,
+                unselectedItemColor: themeProvider.subTextColor,
+                backgroundColor: Colors.transparent,
+                selectedLabelStyle: GoogleFonts.poppins(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                  color: themeProvider.accentColor,
+                ),
+                unselectedLabelStyle: GoogleFonts.poppins(
+                  fontSize: 12,
+                  color: themeProvider.subTextColor,
+                ),
+                type: BottomNavigationBarType.fixed,
+                elevation: 0,
+                items: [
+                  BottomNavigationBarItem(
+                    icon: AnimatedScale(
+                      scale: _selectedIndex == 0 ? 1.2 : 1.0,
+                      duration: const Duration(milliseconds: 200),
+                      curve: Curves.easeInOut,
+                      child: Icon(
+                        IconlyLight.home,
+                        color:
+                            _selectedIndex == 0
+                                ? themeProvider.accentColor
+                                : themeProvider.subTextColor,
+                      ),
+                    ),
+                    activeIcon: AnimatedScale(
+                      scale: _selectedIndex == 0 ? 1.2 : 1.0,
+                      duration: const Duration(milliseconds: 200),
+                      curve: Curves.easeInOut,
+                      child: Icon(
+                        IconlyBold.home,
+                        color:
+                            _selectedIndex == 0
+                                ? themeProvider.accentColor
+                                : themeProvider.subTextColor,
+                      ),
+                    ),
+                    label: 'Bosh sahifa',
+                  ),
+                  BottomNavigationBarItem(
+                    icon: AnimatedScale(
+                      scale: _selectedIndex == 1 ? 1.2 : 1.0,
+                      duration: const Duration(milliseconds: 200),
+                      curve: Curves.easeInOut,
+                      child: Icon(
+                        IconlyLight.video,
+                        color:
+                            _selectedIndex == 1
+                                ? themeProvider.accentColor
+                                : themeProvider.subTextColor,
+                      ),
+                    ),
+                    activeIcon: AnimatedScale(
+                      scale: _selectedIndex == 1 ? 1.2 : 1.0,
+                      duration: const Duration(milliseconds: 200),
+                      curve: Curves.easeInOut,
+                      child: Icon(
+                        IconlyBold.video,
+                        color:
+                            _selectedIndex == 1
+                                ? themeProvider.accentColor
+                                : themeProvider.subTextColor,
+                      ),
+                    ),
+                    label: 'TV',
+                  ),
+                  BottomNavigationBarItem(
+                    icon: AnimatedScale(
+                      scale: _selectedIndex == 2 ? 1.2 : 1.0,
+                      duration: const Duration(milliseconds: 200),
+                      curve: Curves.easeInOut,
+                      child: Icon(
+                        IconlyLight.category,
+                        color:
+                            _selectedIndex == 2
+                                ? themeProvider.accentColor
+                                : themeProvider.subTextColor,
+                      ),
+                    ),
+                    activeIcon: AnimatedScale(
+                      scale: _selectedIndex == 2 ? 1.2 : 1.0,
+                      duration: const Duration(milliseconds: 200),
+                      curve: Curves.easeInOut,
+                      child: Icon(
+                        IconlyBold.category,
+                        color:
+                            _selectedIndex == 2
+                                ? themeProvider.accentColor
+                                : themeProvider.subTextColor,
+                      ),
+                    ),
+                    label: 'Katalog',
+                  ),
+                  BottomNavigationBarItem(
+                    icon: AnimatedScale(
+                      scale: _selectedIndex == 3 ? 1.2 : 1.0,
+                      duration: const Duration(milliseconds: 200),
+                      curve: Curves.easeInOut,
+                      child: Icon(
+                        IconlyLight.heart,
+                        color:
+                            _selectedIndex == 3
+                                ? themeProvider.accentColor
+                                : themeProvider.subTextColor,
+                      ),
+                    ),
+                    activeIcon: AnimatedScale(
+                      scale: _selectedIndex == 3 ? 1.2 : 1.0,
+                      duration: const Duration(milliseconds: 200),
+                      curve: Curves.easeInOut,
+                      child: Icon(
+                        IconlyBold.heart,
+                        color:
+                            _selectedIndex == 3
+                                ? themeProvider.accentColor
+                                : themeProvider.subTextColor,
+                      ),
+                    ),
+                    label: 'Sevimlilar',
+                  ),
+                  BottomNavigationBarItem(
+                    icon: AnimatedScale(
+                      scale: _selectedIndex == 4 ? 1.2 : 1.0,
+                      duration: const Duration(milliseconds: 200),
+                      curve: Curves.easeInOut,
+                      child: Icon(
+                        IconlyLight.profile,
+                        color:
+                            _selectedIndex == 4
+                                ? themeProvider.accentColor
+                                : themeProvider.subTextColor,
+                      ),
+                    ),
+                    activeIcon: AnimatedScale(
+                      scale: _selectedIndex == 4 ? 1.2 : 1.0,
+                      duration: const Duration(milliseconds: 200),
+                      curve: Curves.easeInOut,
+                      child: Icon(
+                        IconlyBold.profile,
+                        color:
+                            _selectedIndex == 4
+                                ? themeProvider.accentColor
+                                : themeProvider.subTextColor,
+                      ),
+                    ),
+                    label: 'Profil',
+                  ),
+                ],
+              ),
+              AnimatedPositioned(
+                duration: const Duration(milliseconds: 300),
+                curve: Curves.easeInOut,
+                top: 0,
+                left:
+                    _selectedIndex * (MediaQuery.of(context).size.width / 5) +
+                    (MediaQuery.of(context).size.width / 10) -
+                    16,
+                child: Container(
+                  width: 32,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [
+                        themeProvider.accentColor.withOpacity(0.7),
+                        themeProvider.accentColor,
+                      ],
+                    ),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
+              ),
+            ],
           ),
-          BottomNavigationBarItem(
-            icon: const Icon(Icons.search),
-            label: "Katalog", // S.of(context).catalog o‘rniga
-          ),
-          BottomNavigationBarItem(
-            icon: const Icon(Icons.person),
-            label: "Profil", // S.of(context).profile o‘rniga
-          ),
-        ],
-        currentIndex: _selectedIndex,
-        selectedItemColor: Colors.blue,
-        unselectedItemColor:
-            themeProvider.isDarkMode ? Colors.grey[400] : Colors.grey,
-        onTap: _onItemTapped,
-        type: BottomNavigationBarType.fixed,
-        backgroundColor:
-            themeProvider.isDarkMode ? const Color(0xFF1F2937) : Colors.white,
-        selectedLabelStyle: GoogleFonts.poppins(fontSize: 12),
-        unselectedLabelStyle: GoogleFonts.poppins(fontSize: 12),
+        ),
       ),
     );
   }
+}
+
+// KeepAliveWrapper uchun yordamchi widget
+class KeepAliveWrapper extends StatefulWidget {
+  final Widget child;
+
+  const KeepAliveWrapper({super.key, required this.child});
+
+  @override
+  State<KeepAliveWrapper> createState() => _KeepAliveWrapperState();
+}
+
+class _KeepAliveWrapperState extends State<KeepAliveWrapper>
+    with AutomaticKeepAliveClientMixin {
+  @override
+  Widget build(BuildContext context) {
+    super.build(context); // AutomaticKeepAliveClientMixin uchun zarur
+    return widget.child;
+  }
+
+  @override
+  bool get wantKeepAlive => true; // Har bir ekranning holatini saqlash
 }

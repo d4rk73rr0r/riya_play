@@ -43,3 +43,6 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Local dev machine paths (per-developer, not shareable)
+**/android/local.properties

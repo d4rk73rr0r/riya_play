@@ -1,7 +1,7 @@
 name: riya_play
 description: Riya Play Downloader Flutter App
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.1+2
 
 environment:
   sdk: ^3.7.2
@@ -9,34 +9,54 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  intl: ^0.19.0
-  dio: ^5.4.0
-  flutter_bloc: ^9.1.0
-  freezed_annotation: ^3.0.0
-  flutter_secure_storage: ^10.0.0-beta.4
+  http: ^1.2.0
+  # firebase_core: ^2.32.0 – o‘chirilgan
+  url_launcher: ^6.3.1
+  android_intent_plus: ^5.3.0
+  connectivity_plus: ^6.1.4
   provider: ^6.1.1
   package_info_plus: ^8.0.2
-  path_provider: ^2.1.4
-  shared_preferences: ^2.3.0
-  wakelock_plus: ^1.2.6
+  # GitHub Releases orqali ilova ichida yangilanish (Play Store'dan tashqari
+  # tarqatilganda kerak).
+  ota_update: ^7.1.0
+  path_provider: ^2.1.5
+  shared_preferences: ^2.5.3
+  wakelock_plus: ^1.2.11
+  intl: ^0.20.2
+  mobile_scanner: ^6.0.10
+  permission_handler: ^12.0.0+1
+  # HLS AES-128 segmentlarini yuklab olishda deshifrlash uchun
+  pointycastle: ^4.0.0
+  # .ts -> .mp4 remuxing uchun. "min" varianti ataylab tanlangan: u LGPL
+  # (ilova yopiq kodli qolaveradi) va APK hajmiga eng kam qo'shadi. Bizga
+  # kodeklar kerak emas — remuxing faqat konteynerni almashtiradi (-c copy).
+  ffmpeg_kit_flutter_new_min: ^3.6.2
   cached_network_image: ^3.3.1
   flutter_cache_manager: ^3.3.2
+  logger: ^2.5.0
+  shimmer: ^3.0.0
+  skeletonizer: ^1.4.3
+  app_settings: ^6.1.1
   better_player:
     git: https://github.com/Lo4D/better-player-ultra.git
   flutter_spinkit: ^5.2.1
   cupertino_icons: ^1.0.8
-  google_fonts: ^6.2.1
+  font_awesome_flutter: ^10.8.0
+  flutter_iconly:
+    path: packages/flutter_iconly
+  google_fonts: ^6.3.3
   carousel_slider: ^5.0.0
   sms_autofill: ^2.3.0
   device_info_plus: ^11.3.3
-  flutter_datetime_picker: ^1.5.1
-
-dev_dependencies:
-  flutter_test:
-    sdk: flutter
-  flutter_lints: ^5.0.0
-  freezed: ^3.0.6
-  build_runner: ^2.4.6
-
+  screen_brightness: ^2.1.2
+  screen_brightness_android: ^2.1.1
+  screen_brightness_ios: ^2.1.1
 flutter:
   uses-material-design: true
+  assets:
+    - assets/images/background.png
+    - assets/images/logo.png
+dev_dependencies:
+  flutter_lints: ^5.0.0
+  flutter_native_splash: ^2.4.6
+  flutter_launcher_icons: ^0.14.3
