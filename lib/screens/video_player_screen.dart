@@ -90,6 +90,10 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   /// uzilsa, oxirgi pauzadan keyingi hamma narsa yo'qoladi.
   static const Duration _syncInterval = Duration(seconds: 30);
 
+  /// Shundan qisqa ko'rish saqlanmaydi — tasodifan ochib yopish
+  /// "Ko'rishni davom ettirish" ro'yxatini to'ldirmasin.
+  static const int _minSavedSeconds = 5;
+
   @override
   void initState() {
     super.initState();
@@ -158,7 +162,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
 
     // Server — yagona manba. Bir necha soniyalik ko'rish yuborilmaydi:
     // bu tasodifan ochib yopish bo'lishi mumkin.
-    if (resolved == null || resolved.inSeconds <= 5) return;
+    if (resolved == null || resolved.inSeconds <= _minSavedSeconds) return;
     final seconds = resolved.inSeconds;
     if (_lastSyncedSeconds == seconds || _writingSeconds == seconds) return;
 
@@ -183,6 +187,13 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
 
   /// Ko'rish davom etayotganda [_syncInterval] oralig'ida yozib boradi.
   void _maybeSyncPosition(Duration position) {
+    // Hali saqlashga arzimaydigan pozitsiya oraliqni "band qilmasligi"
+    // kerak. Ilgari birinchi `progress` hodisasi (pozitsiya ~0 s) yozuvni
+    // boshlab, keyingi imkoniyatni 30 soniyaga surib yuborardi: yangi
+    // filmning dastlabki yarim daqiqasi umuman saqlanmasdi va shu orada
+    // ilova yopilsa, yozuv "00:00" bo'lib qolardi.
+    if (position.inSeconds <= _minSavedSeconds) return;
+
     final last = _lastSyncAt;
     if (last != null && DateTime.now().difference(last) < _syncInterval) {
       return;
@@ -403,12 +414,16 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
       // shuning uchun `safeGetPosition` ni kutib bo'lmaydi — `progress`
       // hodisasidan yig'ilgan qiymat yoki controller'ning joriy holati
       // ishlatiladi.
+      // `value.position` — null bo'lmaydigan `Duration`: agar controller
+      // allaqachon nolga tushirilgan bo'lsa, u 0 qaytaradi va `??` hech
+      // qachon zaxiraga o'tmaydi. Shuning uchun ikkalasidan kattasini
+      // olamiz — `progress` hodisasidan yig'ilgan qiymat ishonchliroq.
+      final live = _betterPlayerController?.videoPlayerController?.value.position;
+      final known = _lastKnownPosition;
       final pending =
-          _betterPlayerController
-              ?.videoPlayerController
-              ?.value
-              .position ??
-          _lastKnownPosition;
+          (live == null)
+              ? known
+              : (known == null || live > known ? live : known);
       _isDisposed = true;
       try {
         // Playback pozitsiyasini saqlash

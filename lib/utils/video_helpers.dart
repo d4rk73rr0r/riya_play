@@ -56,8 +56,14 @@ Future<void> safeDispose(
         controller.removeEventsListener(onFullscreenEvent);
       }
 
-      // Controller'ni dispose qilish
-      await controller.dispose();
+      // Controller'ni dispose qilish. `forceDispose: true` SHART:
+      // pleer `autoDispose: false` bilan yaratilgan, better_player esa
+      // `dispose()` ni shu holatda darhol qaytaradi —
+      //   if (!betterPlayerConfiguration.autoDispose && !forceDispose) return;
+      // — natijada ExoPlayer tirik qolib, har bir ko'rish seansi ~155 MB
+      // Java heap qoldirardi va to'rtinchi seansda ilova OutOfMemoryError
+      // bilan yopilardi.
+      await controller.dispose(forceDispose: true);
     }
   } catch (e) {
     appLogger.d("safeDispose xato: $e");

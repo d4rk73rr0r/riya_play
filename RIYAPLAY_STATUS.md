@@ -63,6 +63,19 @@ The session covered four areas, in order:
    wrong progress denominator, wrong sort order; plus the cards now start
    playback directly instead of opening the film page.
 
+### Session of 2026-08-13, part 4 — "00:00 on first playback" and the crash
+
+Reported: a film watched for the first time (Catalog → FilmScreen → play →
+Android Back **without pausing**) shows up in "Ko'rishni davom ettirish" with
+`00:00` and restarts from zero, while the *second* session of the same film
+saves its position correctly. Separately, the app sometimes dies mid-playback.
+
+Two independent root causes were found; both are described in Bugs 17 and 18
+below. Neither is a UI-rendering problem, and the app never sends `0` — the
+`00:00` row is a latest-viewed entry that has **no** `second` record at all
+(verified with the API: `second.time` is absent, not zero, for the affected
+films).
+
 ### Session of 2026-08-13, part 3 — comparison with `tplaytv` and ports
 
 The sibling Android-TV project `D:\Android\Projects\tplaytv` was compared
@@ -367,6 +380,70 @@ Debug APK builds and installs successfully. Device used for testing:
 - **Verified on device**: the home card now shows 47:08 immediately after a
   back press that wrote 2828 s.
 
+### 17. Every playback session leaked ~155 MB of Java heap (the crash)
+
+- **Symptoms**: the app dies while a video is playing, more often the longer
+  the session goes on. Device crash records show
+  `java.lang.OutOfMemoryError: Failed to allocate … target footprint
+  536870912, growth limit 536870912` and, as a second face of the same
+  failure, `[FATAL:flutter/shell/platform/android/platform_view_android_jni_impl.cc(1485)]
+  Check failed: fml::jni::CheckException(env).`
+- **Root cause**: the player is created with `autoDispose: false`
+  ("safeDispose orqali boshqaramiz"), and `safeDispose` called
+  `controller.dispose()` **without** `forceDispose`. In `better_player`:
+
+  ```dart
+  Future<void> dispose({bool forceDispose = false}) async {
+    if (!betterPlayerConfiguration.autoDispose && !forceDispose) {
+      return;
+    }
+  ```
+
+  so the call was a no-op and the underlying ExoPlayer was never released.
+- **Affected files**: `lib/utils/video_helpers.dart`,
+  `lib/screens/video_player_screen.dart:342` (the `autoDispose: false` that
+  makes the flag necessary).
+- **Confirmed by**: measuring `dumpsys meminfo` across three play → back
+  cycles, **before** the fix: 14 MB → 169 MB → 330 MB → 481 MB of Java heap
+  (`largeHeap="true"` gives 512 MB, so the fourth session dies).
+- **Status**: **FIXED** — `controller.dispose(forceDispose: true)`.
+- **Verified**: four cycles after the fix: 179 MB → 174 MB → 17 MB (after a
+  GC) → 135 MB. Bounded, no monotonic growth.
+
+### 18. A first session could end without any position write ("00:00")
+
+- **Symptoms**: as reported above — first session of a new film shows `00:00`,
+  the second session saves correctly.
+- **Root cause**: two things combined.
+  1. `_maybeSyncPosition` stamped `_lastSyncAt` **before** knowing whether the
+     write would actually happen. The very first `progress` event arrives at a
+     position of ~0-1 s, which `_savePlaybackPosition` drops (`<= 5 s`), but
+     the timestamp was already taken — so the next possible write was 30 s
+     later. A new film therefore had a 30-second window in which **nothing**
+     was ever sent.
+  2. Inside that window the process could die (Bug 17) or the user could leave
+     while the exit write itself was skipped, leaving the server row with no
+     `second` record. The UI renders a missing record as `00:00` and resumes
+     from zero — which is exactly what was reported as "the server saves
+     00:00".
+- **Why the second session always worked**: playback starts at
+  `startAt = resumeSeconds`, so the *first* `progress` event is already past
+  the 5-second threshold and `_lastSyncAt` is still null — the position is
+  written within about a second of pressing play, long before Back is pressed.
+  The asymmetry was never in the Back handler.
+- **A third, latent trap in the same area**: `dispose()` resolved the position
+  as `videoPlayerController?.value.position ?? _lastKnownPosition`.
+  `value.position` is a **non-nullable** `Duration`, so the `??` could never
+  fall back; had the controller already been reset to zero, the good value
+  collected from `progress` events would have been ignored.
+- **Affected files**: `lib/screens/video_player_screen.dart`.
+- **Status**: **FIXED** — the throttle is only consumed when the position is
+  actually worth saving, and `dispose()` now takes the **larger** of
+  `value.position` and `_lastKnownPosition`.
+- **Verified on device**: a brand-new film (Catalog → FilmScreen → play →
+  Back at ~20 s, never paused) wrote `10s` during playback and `23s` on exit;
+  the server returned `second.time=23`.
+
 ---
 
 ## Fixes Implemented
@@ -420,6 +497,13 @@ Debug APK builds and installs successfully. Device used for testing:
 | `lib/utils/video_launcher.dart` | `_awaitPositionFlush()` after `Navigator.push` — waits up to 800 ms for the exit write to start, then for it to finish | Bug 16 | Yes — device |
 | `lib/screens/index_screen.dart` | `IndexScreenProvider.latestViewedFields` (shared constant) and `reloadLatestViewed()`; the card awaits the player, then reloads | Bug 15 | Yes — device |
 | `lib/screens/latestviewed_screen.dart` | `LatestViewedCard.onReturn` wired to the screen's `_refresh` (superseded in part 3 by `RouteAware`) | Bug 15 | Yes — device |
+
+### Player lifetime and first-session writes (2026-08-13, part 4)
+
+| File | Change | Why | Tested |
+| --- | --- | --- | --- |
+| `lib/utils/video_helpers.dart` | `controller.dispose(forceDispose: true)` in `safeDispose` | Bug 17 — without the flag `better_player` returns immediately and the ExoPlayer is never released | Yes — heap measured over four cycles |
+| `lib/screens/video_player_screen.dart` | `_maybeSyncPosition` returns before touching `_lastSyncAt` when the position is below `_minSavedSeconds`; the 5-second threshold is now the named constant `_minSavedSeconds`; `dispose()` takes `max(value.position, _lastKnownPosition)` | Bug 18 — the first 30 s of a new film produced no write at all, and the exit path could ignore the only good value it had | Yes — device, first and second session |
 
 ### Ported from `tplaytv` (2026-08-13, part 3)
 
@@ -486,6 +570,25 @@ occasions produced **byte-identical** files (286,810,489 bytes).
 > re-download at 720p is 436,429,687 bytes, `ffprobe` duration 2821.46 s
 > (= 47:01, exactly the catalogue value), and a full decode reports zero
 > errors. The old file was a stale artifact.
+
+**Player memory (device, 2026-08-13, part 4).** `dumpsys meminfo`, Java heap,
+sampled after each play → Back cycle of ~25 s:
+
+| Cycle | Before the fix | After the fix |
+| --- | --- | --- |
+| app start | 14 MB | 13 MB |
+| 1 | 169 MB | 179 MB |
+| 2 | 330 MB | 174 MB |
+| 3 | 481 MB | 17 MB (after GC) |
+| 4 | — (OOM territory) | 135 MB |
+
+**First/second session writes (device, part 4):**
+
+| Scenario | Log | Server |
+| --- | --- | --- |
+| Brand-new film, Catalog → FilmScreen → play → Back at ~20 s, never paused | `10s` (in-playback) then `23s` (exit) | `second.time=23` |
+| Same film re-opened from the row, play → Back | write within ~1 s of pressing play, then the exit write | matches |
+| Four consecutive play → Back cycles | a write in every cycle (32, 62, 90, 121 s) | matches |
 
 **Watch position (device, 2026-08-13, package `uz.mrlg.riyaplay.debug`):**
 
@@ -591,6 +694,9 @@ verified on device.)
 | Investigate debug-mode poster rendering | Affects development experience | `lib/widgets/poster_card.dart`, `lib/utils/image_cache_manager.dart` | Low | Not started | Compare `CachedNetworkImage` behaviour between debug and release |
 | ~~Route `film_screen` / `films_full_screen` playback through `VideoLauncher`~~ | Duplicated `_playVideo`, no flush wait, no refresh | `lib/screens/film_screen.dart`, `lib/screens/films_full_screen.dart`, `lib/utils/video_launcher.dart` | Medium | **DONE** | Both delegate to `VideoLauncher.playWithChooser`; verified on device |
 | Verify the `getFirstEpisode` fallback | The new branch only runs for a film whose payload has no `lastSeries`, which no tested film had | `lib/services/api/films_api.dart`, `lib/screens/film_screen.dart` | Low | Not started | Find such a film in the catalogue (or stub the field out in a debug build) and confirm the button plays instead of doing nothing |
+| Re-test the reported scenario on a **release** build | The user's release install (`uz.mrlg.riyaplay`, versionCode 2002, installed 18:21) predates the part-4 fixes; every part-4 measurement was made on `uz.mrlg.riyaplay.debug` | — | High | Not started | `flutter build apk --release`, install, repeat: new film → play → Back without pausing, and four play/Back cycles while watching `dumpsys meminfo` |
+| Re-check TV channels after the disposal change | `tv_channels_screen` pushes the same player for live streams; the disposal path changed for it too, and it was not re-exercised end to end | `lib/screens/tv_channels_screen.dart` | Medium | Not started | Open a channel, watch, leave, repeat twice and check the heap |
+| Sessions shorter than 6 s are still not saved | `_minSavedSeconds = 5` is deliberate (an accidental open should not fill the row), but it does mean a very short first session leaves a `00:00` card | `lib/screens/video_player_screen.dart` | Low | By design | Revisit only if users complain about the empty card, not about the position |
 | Backport to `tplaytv` | That project writes the position only on exit/`WillPop`/`finished`, and its progress bars use the non-existent `film.playback_time` so they always read full | `tplaytv/lib/screens/video_player_screen.dart`, `tplaytv/lib/widgets/index/index_sections.dart`, `tplaytv/lib/screens/latestviewed_screen.dart` | Medium | Not started | Copy the 30 s periodic sync + pause write, and switch the denominator to the item's `duration` |
 
 ---
@@ -692,6 +798,7 @@ Modified:
 - `lib/screens/latestviewed_screen.dart` — correct film id, progress helper, tap → playback, long-press → film page.
 - `lib/screens/video_player_screen.dart` — server-only watch position, real `startAt` field; 2026-08-13: working exit write, 30 s periodic sync, `pendingPositionFlush`.
 - `lib/utils/video_launcher.dart` — 2026-08-13: waits for the exit write before the caller reloads its list.
+- `lib/utils/video_helpers.dart` — 2026-08-13: `safeDispose` now passes `forceDispose: true` (Bug 17).
 - `lib/screens/download_screen.dart` — rewritten as quality picker + queue view.
 - `lib/screens/profile_screen.dart` — "Yuklab olishlar" entry.
 - `lib/screens/genres_films_screen.dart` — `FilmCard` image fallback now tries `linkAbsolute`.
@@ -786,6 +893,16 @@ New:
 - **The server drops an entry from `latest-viewed` once the position equals
   the full duration.** That is why a finished film disappears from
   "Ko'rishni davom ettirish" — expected, not a bug.
+- **The app never sends `0` as a position.** A `00:00` card means the
+  latest-viewed row exists with **no** `second` record — the server creates
+  the row when the episode/stream is requested. Check `second.time` in the
+  API before assuming a bad write.
+- **Do not call `controller.dispose()` without `forceDispose: true`.** With
+  `autoDispose: false` it is a silent no-op and leaks the whole ExoPlayer
+  (Bug 17). This is the crash.
+- **Do not "optimise" `_maybeSyncPosition` by stamping `_lastSyncAt` first.**
+  That is exactly what created the 30-second dead window at the start of a
+  new film (Bug 18).
 - **`network_service.dart` and `performance_monitor.dart` in `tplaytv` are
   dead code** — they are referenced nowhere in that project. Do not port them.
 - **`registerQr` / `qr_screen` from `tplaytv` are the TV side of the pairing
@@ -797,12 +914,23 @@ New:
 
 ## Next Recommended Step
 
-Everything the previous checkpoints listed as "next" is done and verified on
-device: concurrency constants, `_DownloadProfile` gating, `latestviewed_screen`
-tap, 5-qism duration, the watch-position work of part 2 (Bugs 13-16), and the
-four `tplaytv` ports of part 3. No High-severity item remains.
+**Build and install a release APK, then repeat the part-4 reproduction on it.**
+Everything in part 4 was measured on `uz.mrlg.riyaplay.debug`; the release
+install on the test device (`uz.mrlg.riyaplay`, versionCode 2002, last updated
+2026-08-13 18:21) still carries the leaking `safeDispose`, so the reporter will
+keep seeing both the crash and the `00:00` card until it is rebuilt:
 
-**Next: settle the OTA repository in `lib/services/update_service.dart`** —
+```
+flutter build apk --release
+adb install -r build/app/outputs/flutter-apk/app-release.apk
+```
+
+Then: a new film from Catalog → play → Back without pausing (expect a write
+during playback and one on exit, and `second.time` on the server), followed by
+four play → Back cycles while watching `dumpsys meminfo` (expect a bounded
+Java heap, no OOM).
+
+After that, settle the OTA repository in `lib/services/update_service.dart` —
 `repoName = "riyaplay-releases"` is still the placeholder from the port, so the
 update check queries a repository that may not exist. Either point
 `ownerName`/`repoName` at the real releases repository and verify one full
