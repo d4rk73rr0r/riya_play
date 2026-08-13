@@ -125,6 +125,39 @@ class FilmsApi {
     }
   }
 
+  /// First (and for a film, only) episode of [filmId], with its `track` so the
+  /// caller also gets a stream URL.
+  ///
+  /// Films are series rows with a single episode, and the watch-progress
+  /// endpoints key on the **episode** id. `film.lastSeries` usually carries
+  /// it, but that field is missing from some payloads — then this is the only
+  /// way to play the film at all. Do not use it for real series: it always
+  /// returns the first episode.
+  static Future<Map<String, dynamic>?> getFirstEpisode(int filmId) async {
+    final prefs = await SharedPreferences.getInstance();
+    final authToken = prefs.getString('auth_token') ?? '';
+    if (authToken.isEmpty) return null;
+
+    final response = await ApiClient.sendRequest(
+      url:
+          "${ApiClient.baseUrl}/v1/series"
+          "?filter[film_id]=$filmId&per-page=1&include=track",
+      headers: {
+        "Authorization": "Bearer $authToken",
+        "X-Device-Name": await ApiClient.getDeviceName(),
+        "Cache-Control": "no-cache",
+      },
+    );
+
+    if (response is! Map || response['success'] == false) return null;
+    final data = response['data'];
+    if (data is List && data.isNotEmpty) {
+      final first = data.first;
+      if (first is Map<String, dynamic>) return first;
+    }
+    return null;
+  }
+
   /// Pushes the current playback position back to the server.
   static Future<bool> updateWatchProgress(int episodeId, int seconds) async {
     final prefs = await SharedPreferences.getInstance();

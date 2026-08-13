@@ -90,6 +90,9 @@ class ApiService {
   static Future<Map<String, dynamic>> getEpisodeDetails(int episodeId) =>
       FilmsApi.getEpisodeDetails(episodeId);
 
+  static Future<Map<String, dynamic>?> getFirstEpisode(int filmId) =>
+      FilmsApi.getFirstEpisode(filmId);
+
   static Future<int> getWatchedSeconds(int episodeId) =>
       FilmsApi.getWatchedSeconds(episodeId);
 

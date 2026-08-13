@@ -17,6 +17,16 @@ import 'package:flutter_iconly/flutter_iconly.dart';
 import 'package:flutter_native_splash/flutter_native_splash.dart';
 import 'package:riya_play/utils/app_logger.dart';
 
+/// Ekranlar qaysi biri ustiga qaysi biri qo'yilganini kuzatadi.
+///
+/// "Ko'rishni davom ettirish" ro'yxatlari pleer yopilganda yangilanishi
+/// kerak, lekin pleer bir necha yo'l bilan ochiladi (kartochka, film sahifasi,
+/// epizodlar ro'yxati). Har bir chaqiruv joyiga qayta yuklashni ulash o'rniga
+/// ekranning o'zi `RouteAware.didPopNext()` orqali "menga qaytishdi" xabarini
+/// oladi.
+final RouteObserver<PageRoute<dynamic>> routeObserver =
+    RouteObserver<PageRoute<dynamic>>();
+
 void main() async {
   WidgetsBinding widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
   FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
@@ -95,6 +105,7 @@ class _RiyaPlayAppState extends State<RiyaPlayApp> {
     return MaterialApp(
       title: 'RiyaPlay',
       debugShowCheckedModeBanner: false,
+      navigatorObservers: [routeObserver],
       theme: _buildDarkTheme(),
       darkTheme: _buildDarkTheme(),
       themeMode: ThemeMode.dark,

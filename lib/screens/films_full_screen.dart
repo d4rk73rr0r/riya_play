@@ -4,10 +4,7 @@ import 'package:provider/provider.dart';
 import 'package:riya_play/services/error_handler.dart';
 import 'package:riya_play/services/api_service.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:riya_play/screens/video_player_screen.dart';
-import 'package:better_player/better_player.dart';
 import 'package:riya_play/theme_provider.dart';
-import 'package:android_intent_plus/android_intent.dart';
 import 'dart:async';
 import 'package:riya_play/utils/navigation.dart'; // createSlideRoute uchun import
 import 'package:riya_play/utils/pagination_controller.dart';
@@ -16,6 +13,7 @@ import 'package:riya_play/utils/image_cache_manager.dart';
 import 'package:riya_play/screens/download_screen.dart';
 import 'package:riya_play/services/download_manager.dart';
 import 'package:riya_play/services/download_service.dart';
+import 'package:riya_play/utils/video_launcher.dart';
 
 class FilmsFullScreen extends StatefulWidget {
   final int filmId;
@@ -459,166 +457,17 @@ class _FilmsFullScreenState extends State<FilmsFullScreen>
       return;
     }
 
-    // Pozitsiya faqat serverdan olinadi.
-    final savedPosition =
-        episodeId == null
-            ? null
-            : await ApiService.getWatchedSeconds(episodeId);
+    if (!mounted) return;
 
-    bool? resumePlayback;
-    if (savedPosition != null && savedPosition > 0) {
-      resumePlayback = await showDialog<bool>(
-        context: context,
-        builder:
-            (context) => AlertDialog(
-              title: const Text("Davom ettirish"),
-              content: Text(
-                "'$title' ni ${_formatDuration(savedPosition)} dan davom ettirishni xohlaysizmi?",
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  child: const Text("Yo'q"),
-                ),
-                TextButton(
-                  onPressed: () => Navigator.pop(context, true),
-                  child: const Text("Ha"),
-                ),
-              ],
-            ),
-      );
-
-      if (resumePlayback == null) return;
-    }
-
-    // Foydalanuvchiga ichki yoki tashqi pleerni tanlash imkonini berish
-    final selectedPlayer = await showDialog<String>(
-      context: context,
-      builder:
-          (context) => AlertDialog(
-            title: const Text("Pleerni tanlang"),
-            content: SizedBox(
-              width: double.maxFinite,
-              child: ListView(
-                shrinkWrap: true,
-                children: [
-                  ListTile(
-                    leading: const Icon(Icons.play_circle_filled),
-                    title: const Text("Ichki pleer: Better Player"),
-                    onTap: () => Navigator.pop(context, 'better_player'),
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.video_library),
-                    title: const Text("Tashqi pleer bilan ochish"),
-                    onTap: () => Navigator.pop(context, 'external'),
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.download),
-                    title: const Text("Yuklab olish"),
-                    onTap: () => Navigator.pop(context, 'download'),
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text("Bekor qilish"),
-              ),
-            ],
-          ),
+    // Dialoglar va pleer tanlash `VideoLauncher` da — `FilmScreen` bilan bir
+    // xil nusxa turardi.
+    await VideoLauncher.playWithChooser(
+      context,
+      url: validUrl,
+      title: title,
+      downloadTitle: downloadTitle,
+      episodeId: episodeId,
     );
-
-    if (selectedPlayer == null) return;
-
-    if (selectedPlayer == 'download') {
-      if (mounted) {
-        Navigator.push(
-          context,
-          createSlideRoute(
-            DownloadScreen(
-              videoUrl: validUrl,
-              title: downloadTitle ?? title,
-            ),
-          ),
-        );
-      }
-      return;
-    }
-
-    if (selectedPlayer == 'better_player') {
-      if (mounted) {
-        await Navigator.push(
-          context,
-          createSlideRoute(
-            // PageRouteBuilder bilan o‘tish
-            VideoPlayerScreen(
-              videoUrl: validUrl,
-              title: title,
-              episodeId: episodeId,
-              liveStream: false,
-              autoPlay: true,
-              fullScreenByDefault: false,
-              deviceOrientationsOnFullScreen: const [
-                DeviceOrientation.landscapeLeft,
-                DeviceOrientation.landscapeRight,
-              ],
-              deviceOrientationsAfterFullScreen: const [
-                DeviceOrientation.portraitUp,
-                DeviceOrientation.portraitDown,
-              ],
-              autoDetectFullscreenDeviceOrientation: false,
-              controlsConfiguration: const BetterPlayerControlsConfiguration(
-                enableFullscreen: true,
-                enablePlayPause: true,
-                enableMute: true,
-                enableProgressText: true,
-                enableSkips: true,
-                enableQualities: true,
-                enableAudioTracks: true,
-              ),
-              notificationConfiguration:
-                  const BetterPlayerNotificationConfiguration(
-                    showNotification: false,
-                  ),
-              startAt:
-                  resumePlayback == true && savedPosition != null
-                      ? Duration(seconds: savedPosition)
-                      : null,
-            ),
-          ),
-        );
-      }
-    } else if (selectedPlayer == 'external') {
-      try {
-        final intent = AndroidIntent(
-          action: 'action_view',
-          data: validUrl,
-          type: 'video/*',
-        );
-        await intent.launch();
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text("Tashqi pleerni ochishda xato: $e")),
-          );
-        }
-      }
-    }
-  }
-
-  String _formatDuration(int seconds) {
-    final duration = Duration(seconds: seconds);
-    String twoDigits(int n) => n.toString().padLeft(2, '0');
-    final hours = twoDigits(duration.inHours);
-    final minutes = twoDigits(duration.inMinutes.remainder(60));
-    final secs = twoDigits(duration.inSeconds.remainder(60));
-
-    if (duration.inHours > 0) {
-      return '$hours:$minutes:$secs';
-    } else {
-      return '$minutes:$secs';
-    }
   }
 
   @override

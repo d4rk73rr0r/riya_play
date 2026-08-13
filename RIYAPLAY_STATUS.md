@@ -63,6 +63,56 @@ The session covered four areas, in order:
    wrong progress denominator, wrong sort order; plus the cards now start
    playback directly instead of opening the film page.
 
+### Session of 2026-08-13, part 3 — comparison with `tplaytv` and ports
+
+The sibling Android-TV project `D:\Android\Projects\tplaytv` was compared
+screen by screen for the watch-position feature. The **API layer is identical**
+in both: same write endpoint (`POST /v2/films/second/{episodeId}`, body
+`{"second": n}`, answer either a bare `true` or a map), same episode read
+(`/v1/series/{id}?include=track,ads,files,screenshots.file,second`), and the
+same latest-viewed query (same `include`, `sort=-updated_at`, `_t` cache
+buster). Episode ids are derived the same way.
+
+The differences, and what happened to each:
+
+| Area | tplaytv | riya_play | Action |
+| --- | --- | --- | --- |
+| Write on pause | no | yes | — |
+| Periodic write during playback | no | yes, 30 s | — (riya_play is ahead; a backport to `tplaytv` is worth doing) |
+| Write on exit | yes | yes (fixed in part 2) | — |
+| Write on `finished` | yes, writes the full duration then pops | was missing | **PORTED** |
+| Refresh after the player closes | `RouteObserver` + `RouteAware.didPopNext` with a 500 ms delay | per-call-site callbacks only | **PORTED**, without the arbitrary delay — it waits for the actual write |
+| Episode id when only the film id is known | `getEpisodeIdByFilmId` (marked `@Deprecated` there) | none | **PORTED** as `getFirstEpisode`, narrowed to single-episode films and documented as such |
+| One shared play/resume/chooser path | `VideoLauncher.playVideo` used by every screen | two near-identical `_playVideo` copies | **PORTED** — `VideoLauncher.playWithChooser` |
+| Progress-bar denominator | `film.playback_time * 60` — the field is absent, so every bar reads full | item `duration` (fixed earlier as Bug 9) | **NOT ported** — `tplaytv` still has this bug |
+| `network_service.dart`, `performance_monitor.dart`, `registerQr`/`qr_screen` | present | absent | **NOT ported** — dead code there, or the TV half of the pairing flow |
+
+### Session of 2026-08-13, part 2 — watch-position writes
+
+A user report ("there is a serious bug in `VideoPlayerScreen`") turned out to
+be four related defects, all confirmed on device and all now fixed: the exit
+write was dead code (Bug 13), nothing wrote during playback (Bug 14), the
+continue-watching lists never refreshed after the player closed (Bug 15), and
+the new refresh could outrun the exit write (Bug 16).
+
+Server truth was checked directly against
+`/v2/films/latest-viewed?include=film,second&sort=-updated_at` with the
+device's own token, not just through the UI.
+
+### Session of 2026-08-13 (continuation)
+
+Started from the previous checkpoint's "Next Recommended Step" and closed it,
+plus the three follow-ups it named:
+
+- Segment concurrency constants made coherent (Bug 0) and re-verified with a
+  full 448 MB download on the device — no restart, 9.11 MB/s effective.
+- `_DownloadProfile.report()` gated behind `kDebugMode`.
+- `latestviewed_screen` tap → resume dialog → playback verified on device.
+- 5-qism duration discrepancy closed: a clean re-download is exactly 47:01 and
+  decodes without errors.
+
+No behaviour outside `lib/services/download_service.dart` was changed.
+
 `flutter analyze lib` reports **5 issues, all pre-existing
 `library_private_types_in_public_api` infos** in
 `latestviewed_screen.dart`, `profile_screen.dart` and two `profile/` screens.
@@ -75,6 +125,24 @@ Debug APK builds and installs successfully. Device used for testing:
 ---
 
 ## Bugs Found
+
+### 0. Segment concurrency constants contradicted each other
+
+- **Symptoms**: only the first batch of an HLS download opened 48 connections;
+  every later batch was silently clamped to 16.
+- **Root cause**: `_initialSegmentConcurrency = 48` was larger than
+  `_maxSegmentConcurrency = 16`, and `_adaptConcurrency` clamps to
+  `[_minSegmentConcurrency, _maxSegmentConcurrency]`. The 48-wide first batch
+  was also the configuration that coincided with an app restart during earlier
+  testing.
+- **Affected files**: `lib/services/download_service.dart:316-324`.
+- **Status**: **FIXED** — `_maxSegmentConcurrency = 24` and
+  `_initialSegmentConcurrency = _maxSegmentConcurrency`, so the value cannot
+  drift apart again.
+- **Verified on device** (SM-A556E, mobile data, 2026-08-13): a clean 720p
+  download of "Kalmar o'yini (1-fasl, 5-qism)" moved 448.0 MB in 49.2 s —
+  9.44 MB/s network, 9.11 MB/s effective — with no restart and no failed
+  segment.
 
 ### 1. Leaving the download screen cancelled the download
 
@@ -231,6 +299,76 @@ Debug APK builds and installs successfully. Device used for testing:
 
 ---
 
+### 13. Leaving the player with the back button never saved the position
+
+- **Symptoms**: watching for any length of time and then pressing back lost
+  everything since the last manual pause. The server kept the older value, so
+  "Ko'rishni davom ettirish" resumed from the wrong place.
+- **Root cause**: `dispose()` set `_isDisposed = true` **before** calling
+  `_savePlaybackPosition()`, and that method's first guard was
+  `if (!mounted || … || _isDisposed) return;`. The write therefore always
+  bailed out on the exit path. A second defect sat behind it: the save is
+  async while `dispose()` is synchronous, and `safeDispose` immediately paused
+  and disposed the controller, so even with the guard fixed the position read
+  could lose the race.
+- **Affected files**: `lib/screens/video_player_screen.dart`.
+- **Confirmed by**: device log on exit —
+  `Playback position saqlanmadi: controller yoki state mavjud emas` — plus a
+  direct `/v2/films/latest-viewed` query showing `second.time` frozen at the
+  pause-time value (2734) after 30 more seconds of playback.
+- **Status**: **FIXED** — the exit write no longer checks `mounted` /
+  `_isDisposed` (it is deliberately independent of the widget), and the
+  position is captured from the controller **before** teardown, falling back
+  to the last value seen in a `progress` event.
+- **Verified on device**: back after pause → 51 s on the server; back **without**
+  pause → 78 s, written at the moment of the back press.
+
+### 14. Position was only ever written on pause
+
+- **Symptoms**: watching an hour without touching the controls and then losing
+  the app (kill, crash, battery) discarded the whole session.
+- **Root cause**: the only two write sites were the `pause` event and the
+  (broken) `dispose` path. Nothing wrote while playback was simply running.
+- **Affected files**: `lib/screens/video_player_screen.dart`.
+- **Status**: **FIXED** — `BetterPlayerEventType.progress` now feeds
+  `_lastKnownPosition` and a 30-second throttle (`_syncInterval`) pushes the
+  position to the server during playback. Repeated identical seconds are
+  skipped, so a paused player does not re-post the same value.
+- **Verified on device**: writes at 28 s, 51 s, 1212 s, 1243 s, 1273 s … at a
+  steady 30-second spacing.
+
+### 15. Continue-watching lists were not refreshed after the player closed
+
+- **Symptoms**: after watching, both the home row and `LatestViewedScreen`
+  still showed the old time and the old order until a manual pull-to-refresh
+  or an app restart. This made the position look unsaved even when it was.
+- **Root cause**: `index_screen` fetches latest-viewed once (plus its
+  5-minute `CacheService` entry) and `latestviewed_screen` only refetches from
+  its `RefreshIndicator`; neither reacted to the player being popped.
+- **Affected files**: `lib/screens/index_screen.dart`,
+  `lib/screens/latestviewed_screen.dart`.
+- **Status**: **FIXED** — `IndexScreenProvider.reloadLatestViewed()` refetches
+  and rewrites the cache, and both card widgets await the player before
+  triggering it (`LatestViewedCard.onReturn`).
+
+### 16. The refresh could outrun the exit write
+
+- **Symptoms**: after the fix for 15, the list occasionally showed the value
+  from the last 30-second sync instead of the exit value (46:02 instead of
+  46:09).
+- **Root cause**: `Navigator.push`'s future completes when the route is
+  **popped**, but the player's `dispose()` — and therefore the exit write —
+  runs only after the exit animation, so the refresh was issued first.
+- **Affected files**: `lib/screens/video_player_screen.dart`,
+  `lib/utils/video_launcher.dart`.
+- **Status**: **FIXED** — `VideoPlayerScreen.pendingPositionFlush` exposes the
+  in-flight write and `VideoLauncher._awaitPositionFlush()` waits for it to
+  appear (up to 800 ms) and then completes before the caller reloads.
+- **Verified on device**: the home card now shows 47:08 immediately after a
+  back press that wrote 2828 s.
+
+---
+
 ## Fixes Implemented
 
 ### Download subsystem
@@ -272,7 +410,29 @@ Debug APK builds and installs successfully. Device used for testing:
 | `lib/utils/latest_viewed.dart` (**new**) | `latestViewedFilmId`, `latestViewedEpisodeId`, `latestViewedSeconds`, `latestViewedDuration`, `latestViewedProgress`, `formatWatchedTime` | The same misreading of the payload existed in two screens | Yes — device |
 | `lib/utils/video_launcher.dart` (**new**) | `VideoLauncher.playFromLatestViewed` — fetches episode details, asks "Davom ettirish / Boshidan", pushes the player | Cards should resume, not open a film page | Yes — index card verified end to end |
 | `lib/screens/index_screen.dart` | Card `onTap` → `VideoLauncher`; `onLongPress` → `FilmScreen`; progress bar colour yellow → `themeProvider.accentColor` | Requested behaviour + colour parity | Yes — device |
-| `lib/screens/latestviewed_screen.dart` | Same tap/long-press split; correct film id and progress | Bug 8 / 9 | Compiles; **tap NOT verified on device** |
+| `lib/screens/latestviewed_screen.dart` | Same tap/long-press split; correct film id and progress | Bug 8 / 9 | Yes — device |
+
+### Watch-position writes (2026-08-13)
+
+| File | Change | Why | Tested |
+| --- | --- | --- | --- |
+| `lib/screens/video_player_screen.dart` | Exit write no longer gated on `mounted`/`_isDisposed`; position captured before teardown with a `progress`-fed `_lastKnownPosition` fallback; 30 s periodic sync (`_syncInterval`) with a duplicate-seconds guard; `static pendingPositionFlush` exposing the in-flight exit write | Bugs 13, 14, 16 | Yes — device, both exit paths |
+| `lib/utils/video_launcher.dart` | `_awaitPositionFlush()` after `Navigator.push` — waits up to 800 ms for the exit write to start, then for it to finish | Bug 16 | Yes — device |
+| `lib/screens/index_screen.dart` | `IndexScreenProvider.latestViewedFields` (shared constant) and `reloadLatestViewed()`; the card awaits the player, then reloads | Bug 15 | Yes — device |
+| `lib/screens/latestviewed_screen.dart` | `LatestViewedCard.onReturn` wired to the screen's `_refresh` (superseded in part 3 by `RouteAware`) | Bug 15 | Yes — device |
+
+### Ported from `tplaytv` (2026-08-13, part 3)
+
+| File | Change | Why | Tested |
+| --- | --- | --- | --- |
+| `lib/main.dart` | Global `routeObserver` (`RouteObserver<PageRoute>`) registered in `MaterialApp.navigatorObservers` | One refresh hook that covers every way the player can be opened | Yes — device |
+| `lib/screens/index_screen.dart` | `RouteAware`: `didPopNext` waits for `VideoLauncher.awaitPositionFlush()` and then `reloadLatestViewed()`; the per-card reload was removed as redundant | Home row was stale after playback started from `FilmScreen` / `FilmsFullScreen` | Yes — device: card updated to 32:56 after playing from the episode list, two routes deep |
+| `lib/screens/latestviewed_screen.dart` | Same `RouteAware` treatment; `onReturn` plumbing removed | Same reason, one mechanism instead of two | Yes — device |
+| `lib/screens/video_player_screen.dart` | `finished` writes the full duration once, disables the wakelock and pops (guarded by `_finishHandled`, `Navigator.canPop`); `_writingSeconds` blocks concurrent duplicate writes | Without it a finished film resumed at "1:29:50" forever; the event fires several times, which first showed up as three identical writes and a `Bad state: No element` from a double pop | Yes — device: single write of 4005 s, no exception, and the entry left the continue-watching list |
+| `lib/services/api/films_api.dart`, `lib/services/api_service.dart` | `getFirstEpisode(filmId)` — `/v1/series?filter[film_id]=…&per-page=1&include=track` | `film.lastSeries` is missing from some payloads, and then the "Ko'rishni boshlash" button did nothing at all | Compiles; **fallback path not reproduced on device** — every film tested carried `lastSeries` |
+| `lib/screens/film_screen.dart` | `_playSingleFilm()` uses that fallback; `_playVideo` now only validates the URL and delegates; dead `_formatDuration` removed | Bug: a film without `lastSeries` was unplayable | Yes — device (`lastSeries` path) |
+| `lib/screens/films_full_screen.dart` | Same delegation; dead `_formatDuration` removed | ~150 duplicated lines that could drift apart | Yes — device |
+| `lib/utils/video_launcher.dart` | `playWithChooser()` — server position, "Davom ettirish?" dialog, "Pleerni tanlang" (internal / external / download), shared `_push` with the flush wait; `awaitPositionFlush()` made public | The resume+chooser flow existed twice; only one copy would ever get fixed | Yes — device, both screens |
 
 ---
 
@@ -322,9 +482,23 @@ every finished download — 27:06, 55:29, 58:08, 47:45, 46:47*, 50:44, 49:22,
 `ffmpeg -f null -`: **zero errors**. Episode 4 downloaded twice on separate
 occasions produced **byte-identical** files (286,810,489 bytes).
 
-> \* The 46:47 file (5-qism) is ~14 s shorter than the catalogue's 47:01. This
-> was **not** re-verified with a clean re-download, so it is **NEEDS
-> VERIFICATION** whether that is a source metadata discrepancy or a real gap.
+> \* The 46:47 figure for 5-qism was **superseded on 2026-08-13**: a clean
+> re-download at 720p is 436,429,687 bytes, `ffprobe` duration 2821.46 s
+> (= 47:01, exactly the catalogue value), and a full decode reports zero
+> errors. The old file was a stale artifact.
+
+**Watch position (device, 2026-08-13, package `uz.mrlg.riyaplay.debug`):**
+
+| Scenario | Log | Server (`second.time`) |
+| --- | --- | --- |
+| New film from `FilmScreen`, watch ~50 s, **pause**, then back | `Pozitsiya serverga yozildi: 28s` → `51s` | 51 |
+| Same film, resume, watch ~20 s, back **without pausing** | `Pozitsiya serverga yozildi: 78s` at the back press | 78 |
+| Continue-watching card, watch ~75 s, back without pausing | 1212 → 1243 → 1273 (30 s apart) → 1278 on exit | 1278 |
+| Home card, watch ~20 s, back | 2828 on exit | 2828, and the card immediately read 47:08 |
+
+The second row is the decisive one: the previous periodic sync was more than
+30 s old but its value (51) equalled the resume point, so the duplicate guard
+suppressed it — the 78 s write can only have come from the exit path.
 
 **Continue watching (device):** progress bars now proportional and pink;
 tapping an index card shows the resume dialog and playback resumed at
@@ -340,6 +514,12 @@ timing instrumentation:
 | 10 | 5.55 MB/s | 44.9 s / 241.8 MB |
 | 24 | 7.23 MB/s | 34.7 s / 241.8 MB |
 | 48 | app restarted — unstable | — |
+| 24 (after the fix, 2026-08-13) | 9.44 MB/s network / 9.11 MB/s effective | 49.2 s / 448.0 MB |
+
+The 2026-08-13 row is a different episode on a different day, so it is not
+directly comparable with the two above — it is evidence that 24 is **stable**,
+not a fourth data point on the curve. In that run app-side work was 4 % of wall
+time (write 2 %, persist 2 %, decrypt 0 % — the stream is unencrypted).
 
 App-side processing (decrypt + disk + persistence) was only **3%** of wall
 time; this stream is unencrypted so decryption cost was zero. The measurement
@@ -364,12 +544,8 @@ None known.
 
 ### High
 
-1. **`_initialSegmentConcurrency = 48` vs `_maxSegmentConcurrency = 16`**
-   (`lib/services/download_service.dart:317-321`). The initial value exceeds
-   the maximum, so only the **first** batch uses 48 connections and every
-   later batch is clamped to 16. A 48-wide batch previously coincided with an
-   app restart during testing. This is an inconsistent configuration that
-   should be resolved deliberately.
+None known. (The former concurrency inconsistency is Bug 0 above — fixed and
+verified on device.)
 
 ### Medium
 
@@ -379,10 +555,16 @@ None known.
    `thumbnails`, and both the thumbnail and full-size URLs return HTTP 200).
    **Root cause UNKNOWN / NEEDS VERIFICATION.**
 
-3. **`latestviewed_screen` tap → direct playback is unverified on device.**
-   The code compiles and mirrors the index screen path, which does work.
+3. ~~`latestviewed_screen` tap → direct playback is unverified on device.~~
+   **VERIFIED on device (2026-08-13).** Tapping "Farishtalar shahri" showed
+   "43:11 dan davom ettirishni xohlaysizmi?", and "Davom ettirish" started the
+   correct film with `Pozitsiya tiklandi: 2591 sekund` (= 43:11).
 
-4. **5-qism duration discrepancy (~14 s).** See the note above.
+4. ~~5-qism duration discrepancy (~14 s).~~ **RESOLVED (2026-08-13).** The
+   file was deleted and re-downloaded cleanly at 720p: 436,429,687 bytes,
+   `ffprobe` duration **2821.46 s = 47:01**, exactly the catalogue value. A
+   full `ffmpeg -v error -i … -f null -` decode reported **zero errors**. The
+   earlier 46:47 file was a stale artifact, not a systematic gap.
 
 ### Low
 
@@ -400,13 +582,16 @@ None known.
 
 | Task | Reason | Files | Priority | Status | Next step |
 | --- | --- | --- | --- | --- | --- |
-| Resolve the concurrency constants | Current values are self-contradictory | `lib/services/download_service.dart` | High | Not started | Decide a single sustained value (16 was stable; 48 was not) and set both constants coherently |
-| Finish the throughput comparison | Started, interrupted; no raw baseline captured | `lib/services/download_service.dart` | Medium | In progress | Capture a single-connection baseline against the same CDN, then compare with the 10/24 numbers already collected |
-| Remove or gate `_DownloadProfile` instrumentation | It is debug scaffolding left in production code | `lib/services/download_service.dart` | Medium | Not started | Either delete it or guard it behind `kDebugMode` once the measurement is finished |
-| Verify `latestviewed_screen` tap on device | Only path of the continue-watching change not exercised | `lib/screens/latestviewed_screen.dart` | Medium | Not started | Open the screen, tap a card, confirm the resume dialog and playback |
+| ~~Resolve the concurrency constants~~ | Values were self-contradictory | `lib/services/download_service.dart` | High | **DONE** | Both set to 24; verified on device at 9.11 MB/s effective, no restart |
+| Finish the throughput comparison | No single-connection baseline was ever captured | `lib/services/download_service.dart` | Low | **Closed deliberately** | Not pursued: the sustained value is now settled (24), and a baseline run costs another ~450 MB of mobile data for a number that would not change the decision. Reopen only if the CDN or the concurrency value changes |
+| ~~Remove or gate `_DownloadProfile` instrumentation~~ | Debug scaffolding in production code | `lib/services/download_service.dart` | Medium | **DONE** | `profile.report()` now guarded by `kDebugMode`, so release builds neither format nor log it. The collection itself (stopwatches) is left in place — it is a few microseconds per batch |
+| ~~Verify `latestviewed_screen` tap on device~~ | Last unexercised continue-watching path | `lib/screens/latestviewed_screen.dart` | Medium | **DONE** | Resume dialog and playback both confirmed (2591 s) |
 | Set the real OTA repository | `repoName = "riyaplay-releases"` is a placeholder chosen during the port | `lib/services/update_service.dart` | Medium | Not started | Confirm the actual GitHub releases repo, or remove the OTA feature if the app ships via Play |
-| Re-check 5-qism duration | Possible missing tail content | — | Low | Not started | Delete the file and re-download cleanly, compare `duration` |
+| ~~Re-check 5-qism duration~~ | Possible missing tail content | — | Low | **DONE** | Clean re-download is exactly 47:01 and decodes without errors |
 | Investigate debug-mode poster rendering | Affects development experience | `lib/widgets/poster_card.dart`, `lib/utils/image_cache_manager.dart` | Low | Not started | Compare `CachedNetworkImage` behaviour between debug and release |
+| ~~Route `film_screen` / `films_full_screen` playback through `VideoLauncher`~~ | Duplicated `_playVideo`, no flush wait, no refresh | `lib/screens/film_screen.dart`, `lib/screens/films_full_screen.dart`, `lib/utils/video_launcher.dart` | Medium | **DONE** | Both delegate to `VideoLauncher.playWithChooser`; verified on device |
+| Verify the `getFirstEpisode` fallback | The new branch only runs for a film whose payload has no `lastSeries`, which no tested film had | `lib/services/api/films_api.dart`, `lib/screens/film_screen.dart` | Low | Not started | Find such a film in the catalogue (or stub the field out in a debug build) and confirm the button plays instead of doing nothing |
+| Backport to `tplaytv` | That project writes the position only on exit/`WillPop`/`finished`, and its progress bars use the non-existent `film.playback_time` so they always read full | `tplaytv/lib/screens/video_player_screen.dart`, `tplaytv/lib/widgets/index/index_sections.dart`, `tplaytv/lib/screens/latestviewed_screen.dart` | Medium | Not started | Copy the 30 s periodic sync + pause write, and switch the denominator to the item's `duration` |
 
 ---
 
@@ -500,19 +685,24 @@ None known.
 
 Modified:
 
-- `lib/main.dart` — `DownloadManager.instance.restore()` before `runApp`; OTA check in `MainScreen.initState`.
+- `lib/main.dart` — `DownloadManager.instance.restore()` before `runApp`; OTA check in `MainScreen.initState`; 2026-08-13: global `routeObserver`.
 - `lib/screens/film_screen.dart` — cast strip + `_CastTile`, `ActorFilmsScreen` navigation, `episodeId` plumbing, server-only resume, status-bar scrim, dead `flexibleSpace` removed.
 - `lib/screens/films_full_screen.dart` — batch/season download, multi-select mode, `PopScope`, `episodeId` plumbing, server-only resume, `ApiErrorHandler`.
 - `lib/screens/index_screen.dart` — `_primeFromCache`, cache writes, continue-watching progress/colour fix, `VideoLauncher` tap.
 - `lib/screens/latestviewed_screen.dart` — correct film id, progress helper, tap → playback, long-press → film page.
-- `lib/screens/video_player_screen.dart` — server-only watch position, real `startAt` field.
+- `lib/screens/video_player_screen.dart` — server-only watch position, real `startAt` field; 2026-08-13: working exit write, 30 s periodic sync, `pendingPositionFlush`.
+- `lib/utils/video_launcher.dart` — 2026-08-13: waits for the exit write before the caller reloads its list.
 - `lib/screens/download_screen.dart` — rewritten as quality picker + queue view.
 - `lib/screens/profile_screen.dart` — "Yuklab olishlar" entry.
 - `lib/screens/genres_films_screen.dart` — `FilmCard` image fallback now tries `linkAbsolute`.
 - `lib/screens/categories_screen.dart` — `ApiErrorHandler` messages.
 - `lib/services/api_service.dart` — facade methods for the new film APIs.
 - `lib/services/api/films_api.dart` — `getEpisodeDetails`, `getWatchedSeconds`, `updateWatchProgress`, `getActorFilms`; latest-viewed `sort=-updated_at`.
-- `lib/services/download_service.dart` — see Fixes Implemented.
+- `lib/services/download_service.dart` — see Fixes Implemented; plus, on
+  2026-08-13, `_maxSegmentConcurrency = 24` with
+  `_initialSegmentConcurrency = _maxSegmentConcurrency`, and
+  `profile.report()` guarded by `kDebugMode` (`package:flutter/foundation.dart`
+  import added).
 - `pubspec.yaml` — added `ota_update: ^7.1.0`.
 - `android/app/build.gradle.kts` — debug suffix, core library desugaring.
 - `android/app/src/main/kotlin/uz/mrlg/riyaplay/MainActivity.kt` — `getFreeBytes`, `.m4s` MIME.
@@ -562,9 +752,40 @@ New:
   solid-red test proved the replacement renders.
 - **Do not raise segment concurrency to 48 expecting a win.** It measured
   worse per connection and coincided with an app restart; 24 gave 7.23 MB/s vs
-  10 giving 5.55 MB/s.
+  10 giving 5.55 MB/s. 24 is now the single sustained value
+  (`_initialSegmentConcurrency = _maxSegmentConcurrency`) and was re-verified
+  stable at 9.11 MB/s effective over 448 MB.
+- **Do not re-open the 5-qism duration question.** A clean re-download is
+  exactly 47:01 (2821.46 s) and decodes without errors.
+- **Do not re-test the `latestviewed_screen` tap path.** Verified end to end on
+  device: dialog → "Davom ettirish" → `Pozitsiya tiklandi: 2591 sekund`.
+- **Do not chase a single-connection throughput baseline.** It was dropped on
+  purpose — see Remaining Work.
 - **Do not look for a local playback-position fallback.** It was deliberately
   removed; the server is the single source of truth.
+- **Do not re-add `mounted` / `_isDisposed` guards to
+  `_savePlaybackPosition`.** That guard is exactly what killed the exit write
+  (Bug 13). The write must survive the widget it was started from.
+- **Do not "simplify" `VideoLauncher._awaitPositionFlush` into a plain
+  `await pendingPositionFlush`.** The player's `dispose()` runs *after*
+  `Navigator.push` returns, so at that instant the field is still null — the
+  short polling loop is the point (Bug 16).
+- **`updateWatchProgress` posts to `/v2/films/second/{episodeId}` with
+  `{"second": n}`** and the endpoint answers either a bare `true` or a map.
+  Both are treated as success; this was re-verified against the live API.
+- **Do not re-compare the API layer with `tplaytv`.** Endpoints, includes,
+  sort order and the `_t` cache buster are already identical; the differences
+  are all on the UI side and are listed in the part-3 table.
+- **Do not port `film.playback_time` progress maths from `tplaytv`.** The
+  field does not exist in the payload — that is riya_play's Bug 9, still
+  unfixed on the TV side.
+- **`BetterPlayerEventType.finished` fires more than once.** It must be
+  guarded (`_finishHandled`), and the pop needs `Navigator.canPop` — the
+  unguarded version produced three identical writes and
+  `Bad state: No element` from `NavigatorState.pop`.
+- **The server drops an entry from `latest-viewed` once the position equals
+  the full duration.** That is why a finished film disappears from
+  "Ko'rishni davom ettirish" — expected, not a bug.
 - **`network_service.dart` and `performance_monitor.dart` in `tplaytv` are
   dead code** — they are referenced nowhere in that project. Do not port them.
 - **`registerQr` / `qr_screen` from `tplaytv` are the TV side of the pairing
@@ -576,19 +797,35 @@ New:
 
 ## Next Recommended Step
 
-**First, resolve the download concurrency configuration in
-`lib/services/download_service.dart` (lines ~316-321) before anything else.**
+Everything the previous checkpoints listed as "next" is done and verified on
+device: concurrency constants, `_DownloadProfile` gating, `latestviewed_screen`
+tap, 5-qism duration, the watch-position work of part 2 (Bugs 13-16), and the
+four `tplaytv` ports of part 3. No High-severity item remains.
 
-Concretely: open the file and read the four constants
-(`_maxInFlightBytes`, `_maxSegmentConcurrency = 16`,
-`_minSegmentConcurrency`, `_initialSegmentConcurrency = 48`). The initial
-value is larger than the maximum, so only the first batch is 48-wide and every
-subsequent batch is clamped to 16 by `_adaptConcurrency`. Decide one coherent
-value — the measured data says 24 outperformed 10 (7.23 vs 5.55 MB/s) while 48
-was unstable — set `_initialSegmentConcurrency <= _maxSegmentConcurrency`,
-rebuild, and re-run one download to confirm stability.
+**Next: settle the OTA repository in `lib/services/update_service.dart`** —
+`repoName = "riyaplay-releases"` is still the placeholder from the port, so the
+update check queries a repository that may not exist. Either point
+`ownerName`/`repoName` at the real releases repository and verify one full
+check → download → install cycle, or remove `update_service.dart`, its
+`MainScreen.initState` call and the `ota_update` dependency.
 
-Only after that, either finish the throughput comparison or delete the
-`_DownloadProfile` instrumentation, and then verify the one untested UI path:
-tapping a card in `latestviewed_screen.dart` should show the
-"Davom ettirish / Boshidan" dialog and start playback.
+After that the open items are all Medium/Low and independent: the
+`getFirstEpisode` fallback is still unexercised, the debug-only actor-poster
+rendering is undiagnosed, `ApiErrorHandler` is still missing from several
+screens, and the `tplaytv` backport (periodic sync + `duration` denominator)
+has not been done.
+
+**Next: settle the OTA repository in `lib/services/update_service.dart`.**
+`repoName = "riyaplay-releases"` is a placeholder carried over from the
+`tplaytv` port, so the update check currently queries a repository that may not
+exist. Two coherent outcomes: point `ownerName`/`repoName` at the real GitHub
+releases repository and verify one full check → download → install cycle, or
+remove `update_service.dart`, its `MainScreen.initState` call and the
+`ota_update` dependency (the core-library-desugaring flag in
+`android/app/build.gradle.kts` can stay — it is harmless on its own).
+
+After that, the remaining open items are all Medium/Low and independent:
+debug-only actor-poster rendering, wiring `ApiErrorHandler` into the screens
+that still interpolate raw `$e`, and deduplicating `_playVideo` between
+`film_screen.dart` and `films_full_screen.dart` into
+`lib/utils/video_launcher.dart`.

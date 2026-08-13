@@ -10,6 +10,7 @@ import 'package:riya_play/utils/image_cache_manager.dart';
 import 'package:riya_play/utils/app_logger.dart';
 import 'package:riya_play/utils/latest_viewed.dart';
 import 'package:riya_play/utils/video_launcher.dart';
+import 'package:riya_play/main.dart' show routeObserver;
 
 class LatestViewedScreen extends StatefulWidget {
   const LatestViewedScreen({super.key});
@@ -19,7 +20,7 @@ class LatestViewedScreen extends StatefulWidget {
 }
 
 class _LatestViewedScreenState extends State<LatestViewedScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, RouteAware {
   late final PaginationController<dynamic> _pagination;
   bool _isEditing = false;
   late AnimationController _animationController;
@@ -90,6 +91,22 @@ class _LatestViewedScreenState extends State<LatestViewedScreen>
     }
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is PageRoute) routeObserver.subscribe(this, route);
+  }
+
+  /// Pleer (yoki film sahifasi) yopilgach ro'yxat qayta o'qiladi — vaqt ham,
+  /// tartib ham o'zgargan bo'lishi mumkin.
+  @override
+  void didPopNext() async {
+    if (!mounted) return;
+    await VideoLauncher.awaitPositionFlush();
+    if (mounted) await _pagination.refresh();
+  }
+
   Future<void> _refresh() async {
     await _pagination.refresh();
     if (mounted) {
@@ -155,6 +172,7 @@ class _LatestViewedScreenState extends State<LatestViewedScreen>
 
   @override
   void dispose() {
+    routeObserver.unsubscribe(this);
     _pagination.dispose();
     _animationController.dispose();
     super.dispose();
@@ -642,7 +660,8 @@ class _LatestViewedCardState extends State<LatestViewedCard>
       onTapUp: (_) {
         _controller.reverse();
         // Bosilganda ko'rish darhol davom etadi; film sahifasi uzoq bosish
-        // orqali ochiladi.
+        // orqali ochiladi. Qaytgandan keyingi yangilash ekranning
+        // `didPopNext` ida.
         if (!widget.isEditing) {
           VideoLauncher.playFromLatestViewed(context, widget.item);
         }

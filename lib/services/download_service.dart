@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
@@ -314,11 +315,16 @@ class DownloadService {
   /// cap is expressed in bytes rather than count: ten 50 MB 4K segments
   /// would be half a gigabyte of heap and an OOM kill on most devices.
   static const int _maxInFlightBytes = 64 * 1024 * 1024;
-  static const int _maxSegmentConcurrency = 16;
+
+  /// O'lchangan qiymat: 24 ta ulanish 7.23 MB/s berdi, 10 tasi — 5.55 MB/s,
+  /// 48 tasi esa beqaror bo'lib ilovani qayta ishga tushirdi. Boshlang'ich
+  /// qiymat maksimaldan oshmasligi shart, aks holda faqat birinchi guruh
+  /// keng bo'lib, qolganlari `_adaptConcurrency` tomonidan qisiladi.
+  static const int _maxSegmentConcurrency = 24;
   static const int _minSegmentConcurrency = 2;
 
   /// Starting batch size, before any segment has been measured.
-  static const int _initialSegmentConcurrency = 48;
+  static const int _initialSegmentConcurrency = _maxSegmentConcurrency;
 
   /// 5 urinish ~6 soniyaga cho'ziladi — mobil tarmoq almashinuvi kabi
   /// qisqa uzilishlarni o'tkazib yuborish uchun yetarli.
@@ -1049,7 +1055,9 @@ class DownloadService {
         }
       } finally {
         await raf.close();
-        profile.report();
+        // Profil — faqat tuzatish (debug) uchun mo'ljallangan o'lchov.
+        // Release'da matn ham qurilmaydi, log ham yozilmaydi.
+        if (kDebugMode) profile.report();
       }
 
       return (

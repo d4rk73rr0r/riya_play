@@ -31,6 +31,13 @@ class VideoPlayerScreen extends StatefulWidget {
   /// position up itself from local storage.
   final Duration? startAt;
 
+  /// Ekran yopilayotganda boshlangan pozitsiya yozuvi. `dispose` sinxron,
+  /// shuning uchun yozuv "fire-and-forget" ketadi; pleerdan keyin ro'yxatni
+  /// yangilaydigan ekranlar shu future'ni kutadi, aks holda ro'yxat yozuv
+  /// serverga yetib bormasidan o'qib, bir necha soniya eski qiymatni
+  /// ko'rsatadi.
+  static Future<void>? pendingPositionFlush;
+
   const VideoPlayerScreen({
     required this.videoUrl,
     required this.title,
@@ -57,6 +64,31 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   bool _isPlayerInitialized = false;
   bool _isDisposed = false;
   final _logger = appLogger;
+
+  /// Oxirgi ma'lum pozitsiya, `progress` hodisasidan yig'iladi. `dispose`
+  /// paytida controller'dan pozitsiyani so'rashga ulgurmaymiz — u sinxron
+  /// metod, undan keyin controller darhol yopiladi — shuning uchun oxirgi
+  /// qiymatni oldindan saqlab boramiz.
+  Duration? _lastKnownPosition;
+
+  /// Serverga oxirgi yozilgan qiymat va vaqti — bir xil sekundni qayta-qayta
+  /// yubormaslik uchun.
+  int? _lastSyncedSeconds;
+  DateTime? _lastSyncAt;
+
+  /// Hozir yuborilayotgan qiymat. `finished` hodisasi bir necha marta
+  /// kelishi mumkin, javob esa hali yetib kelmagan bo'ladi —
+  /// [_lastSyncedSeconds] yolg'iz o'zi bir xil so'rovni to'xtata olmaydi.
+  int? _writingSeconds;
+
+  /// `finished` bir marta ishlashi kerak: takroriy `Navigator.pop` bo'sh
+  /// navigatorda "Bad state: No element" beradi.
+  bool _finishHandled = false;
+
+  /// Ko'rish davomida pozitsiya shu oraliqda serverga yuboriladi. Faqat
+  /// pauza va chiqishga tayanib bo'lmaydi: ilova o'ldirilsa yoki tarmoq
+  /// uzilsa, oxirgi pauzadan keyingi hamma narsa yo'qoladi.
+  static const Duration _syncInterval = Duration(seconds: 30);
 
   @override
   void initState() {
@@ -108,35 +140,57 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     }
   }
 
-  Future<void> _savePlaybackPosition() async {
-    if (!mounted ||
-        _betterPlayerController == null ||
-        !_isPlayerInitialized ||
-        _isDisposed) {
-      _logger.d(
-        "Playback position saqlanmadi: controller yoki state mavjud emas",
-      );
-      return;
-    }
+  /// Pozitsiyani serverga yozadi. Bu yerda `mounted` ham, `_isDisposed` ham
+  /// tekshirilmaydi: yozuv ekranga bog'liq emas, aynan ekran yopilayotganda
+  /// ham ishlashi kerak. Ilgari `dispose` `_isDisposed = true` ni yozuvdan
+  /// oldin qo'ygani uchun "orqaga" tugmasi bilan chiqilganda pozitsiya
+  /// umuman saqlanmasdi.
+  Future<void> _savePlaybackPosition({Duration? position}) async {
+    final episodeId = widget.episodeId;
+    if (episodeId == null) return;
+
+    final resolved =
+        position ??
+        (_isDisposed
+            ? _lastKnownPosition
+            : await safeGetPosition(_betterPlayerController) ??
+                _lastKnownPosition);
+
+    // Server — yagona manba. Bir necha soniyalik ko'rish yuborilmaydi:
+    // bu tasodifan ochib yopish bo'lishi mumkin.
+    if (resolved == null || resolved.inSeconds <= 5) return;
+    final seconds = resolved.inSeconds;
+    if (_lastSyncedSeconds == seconds || _writingSeconds == seconds) return;
+
+    _writingSeconds = seconds;
     try {
-      final position = await safeGetPosition(_betterPlayerController);
-      final episodeId = widget.episodeId;
-      // Server — yagona manba. Bir necha soniyalik ko'rish yuborilmaydi:
-      // bu tasodifan ochib yopish bo'lishi mumkin.
-      if (position != null && position.inSeconds > 5 && episodeId != null) {
-        final ok = await ApiService.updateWatchProgress(
-          episodeId,
-          position.inSeconds,
-        );
-        _logger.d(
-          ok
-              ? "Pozitsiya serverga yozildi: ${position.inSeconds}s"
-              : "Pozitsiyani serverga yozib bo‘lmadi",
-        );
+      final ok = await ApiService.updateWatchProgress(episodeId, seconds);
+      if (ok) {
+        _lastSyncedSeconds = seconds;
+        _lastSyncAt = DateTime.now();
       }
+      _logger.d(
+        ok
+            ? "Pozitsiya serverga yozildi: ${seconds}s"
+            : "Pozitsiyani serverga yozib bo‘lmadi",
+      );
     } catch (e) {
       _logger.e("Playback position saqlashda xato: $e");
+    } finally {
+      if (_writingSeconds == seconds) _writingSeconds = null;
     }
+  }
+
+  /// Ko'rish davom etayotganda [_syncInterval] oralig'ida yozib boradi.
+  void _maybeSyncPosition(Duration position) {
+    final last = _lastSyncAt;
+    if (last != null && DateTime.now().difference(last) < _syncInterval) {
+      return;
+    }
+    // Vaqtni darhol belgilaymiz — javob kelguncha keyingi `progress`
+    // hodisalari yana so'rov ochib yubormasin.
+    _lastSyncAt = DateTime.now();
+    _savePlaybackPosition(position: position);
   }
 
   /// Seeks to the position the caller resolved from the server. Nothing is
@@ -168,6 +222,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
         _logger.d("Video avtomatik o‘ynatildi");
       }
       await _restorePlaybackPosition();
+    } else if (event.betterPlayerEventType == BetterPlayerEventType.progress) {
+      final progress = event.parameters?['progress'];
+      if (progress is Duration && !widget.liveStream) {
+        _lastKnownPosition = progress;
+        _maybeSyncPosition(progress);
+      }
     } else if (event.betterPlayerEventType ==
         BetterPlayerEventType.changedTrack) {
       _logger.d("Sifat o‘zgartirildi: ${event.parameters}");
@@ -178,6 +238,24 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
       } catch (e) {
         _logger.e("Wakelock yoqishda xato: $e");
       }
+    } else if (event.betterPlayerEventType == BetterPlayerEventType.finished) {
+      // Video oxirigacha ko'rildi. To'liq davomiylik yoziladi, aks holda
+      // keyingi safar "1:29:50 dan davom ettirasizmi?" deb so'raladi va
+      // "Ko'rishni davom ettirish" ro'yxatida deyarli to'la progress qoladi.
+      // Hodisa bir necha marta keladi — bir marta ishlashi kerak.
+      if (_finishHandled) return;
+      _finishHandled = true;
+      final total =
+          _betterPlayerController?.videoPlayerController?.value.duration;
+      if (!widget.liveStream && total != null && total.inSeconds > 0) {
+        await _savePlaybackPosition(position: total);
+      }
+      try {
+        await WakelockPlus.disable();
+      } catch (e) {
+        _logger.e("Wakelock o‘chirishda xato: $e");
+      }
+      if (mounted && Navigator.canPop(context)) Navigator.pop(context);
     } else if (event.betterPlayerEventType == BetterPlayerEventType.pause) {
       await _savePlaybackPosition();
       try {
@@ -321,10 +399,22 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     if (!_isDisposed &&
         _betterPlayerController != null &&
         _isPlayerInitialized) {
+      // Pozitsiyani controller yopilishidan OLDIN olamiz. `dispose` sinxron,
+      // shuning uchun `safeGetPosition` ni kutib bo'lmaydi — `progress`
+      // hodisasidan yig'ilgan qiymat yoki controller'ning joriy holati
+      // ishlatiladi.
+      final pending =
+          _betterPlayerController
+              ?.videoPlayerController
+              ?.value
+              .position ??
+          _lastKnownPosition;
       _isDisposed = true;
       try {
         // Playback pozitsiyasini saqlash
-        _savePlaybackPosition().catchError((e) {
+        VideoPlayerScreen.pendingPositionFlush = _savePlaybackPosition(
+          position: pending,
+        ).catchError((e) {
           _logger.e("Playback position saqlashda xato: $e");
         });
 

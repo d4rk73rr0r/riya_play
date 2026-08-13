@@ -19,7 +19,7 @@ import 'package:riya_play/screens/categories_screen.dart';
 import 'package:riya_play/utils/navigation.dart';
 import 'package:riya_play/utils/image_cache_manager.dart';
 import 'package:riya_play/utils/app_logger.dart';
-import 'package:riya_play/main.dart' show MainScreen;
+import 'package:riya_play/main.dart' show MainScreen, routeObserver;
 import 'package:riya_play/services/cache_service.dart';
 import 'package:riya_play/utils/latest_viewed.dart';
 import 'package:riya_play/utils/video_launcher.dart';
@@ -70,6 +70,34 @@ class IndexScreenProvider with ChangeNotifier {
     _latestViewed = data;
     _isLoadingLatestViewed = false;
     // TUZATISH: notifyListeners();
+  }
+
+  /// "Ko'rishni davom ettirish" so'rovi uchun maydonlar ro'yxati — dastlabki
+  /// yuklash va pleerdan qaytgandagi yangilash bir xil shaklda kelishi kerak.
+  static const String latestViewedFields =
+      'name_uz,name_ru,name_en,id,films.id,films.name_uz,films.name_ru,'
+      'films.publish_time,films.type,films.paid,films.year,films.tags.id,'
+      'films.tags.title_uz,films.tags.title_en,films.files.thumbnails';
+
+  /// Pleer yopilgandan keyin chaqiriladi: server pozitsiyasi o'zgargan,
+  /// ekrandagi ro'yxat esa eski. Kesh ham yangilanadi, aks holda ilova
+  /// qayta ochilganda yana eski qiymat chiziladi.
+  Future<void> reloadLatestViewed() async {
+    try {
+      final response = await ApiService.getLatestViewed(
+        isAll: false,
+        perPage: 10,
+        fields: latestViewedFields,
+      );
+      final films = response['data'];
+      if (films is List) {
+        updateLatestViewed(films);
+        await CacheService.put(CacheService.latestViewedKey, films);
+        notifyListeners();
+      }
+    } catch (e) {
+      appLogger.e('So‘ngi ko‘rilganlarni yangilashda xato: $e');
+    }
   }
 
   void updateRecommendedFilms(List<dynamic> data) {
@@ -202,7 +230,8 @@ class IndexScreenContent extends StatefulWidget {
   State<IndexScreenContent> createState() => _IndexScreenContentState();
 }
 
-class _IndexScreenContentState extends State<IndexScreenContent> {
+class _IndexScreenContentState extends State<IndexScreenContent>
+    with RouteAware {
   bool _isShowingError = false;
   StreamSubscription<List<ConnectivityResult>>? _connectivitySubscription;
   Timer? _connectivityDebounce;
@@ -241,8 +270,27 @@ class _IndexScreenContentState extends State<IndexScreenContent> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final route = ModalRoute.of(context);
+    if (route is PageRoute) routeObserver.subscribe(this, route);
+  }
+
+  /// Ustimizdagi ekran (pleer, film sahifasi, epizodlar ro'yxati) yopilganda
+  /// chaqiriladi. Ko'rish pozitsiyasi shu orada o'zgargan bo'lishi mumkin,
+  /// shuning uchun "Ko'rishni davom ettirish" qatorini qayta o'qiymiz.
+  @override
+  void didPopNext() async {
+    if (!mounted) return;
+    final provider = Provider.of<IndexScreenProvider>(context, listen: false);
+    await VideoLauncher.awaitPositionFlush();
+    if (mounted) await provider.reloadLatestViewed();
+  }
+
+  @override
   void dispose() {
     appLogger.d('IndexScreen dispose called');
+    routeObserver.unsubscribe(this);
     _connectivitySubscription?.cancel();
     _connectivityDebounce?.cancel();
     super.dispose();
@@ -305,8 +353,7 @@ class _IndexScreenContentState extends State<IndexScreenContent> {
             () => ApiService.getLatestViewed(
               isAll: false,
               perPage: 10,
-              fields:
-                  'name_uz,name_ru,name_en,id,films.id,films.name_uz,films.name_ru,films.publish_time,films.type,films.paid,films.year,films.tags.id,films.tags.title_uz,films.tags.title_en,films.files.thumbnails',
+              fields: IndexScreenProvider.latestViewedFields,
             ),
         onSuccess: (response) {
           final films = response['data'] ?? [];
@@ -1077,6 +1124,8 @@ class LatestViewedItem extends StatelessWidget {
       // Film sahifasini ochish o'rniga to'g'ridan-to'g'ri o'ynatamiz:
       // "Ko'rishni davom ettirish" aynan shu ortiqcha qadamlarni yo'q qilish
       // uchun bor. Film sahifasi uzoq bosish orqali ochiladi.
+      // Pleerdan qaytgach ro'yxatni ekranning o'zi `didPopNext` da
+      // yangilaydi — bu yerda takroran so'rov yubormaymiz.
       onTap: () => VideoLauncher.playFromLatestViewed(context, item),
       onLongPress: () {
         Navigator.push(context, createSlideRoute(FilmScreen(filmId: filmId)));

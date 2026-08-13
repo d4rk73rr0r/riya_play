@@ -4,11 +4,8 @@ import 'package:provider/provider.dart';
 import 'package:riya_play/screens/films_full_screen.dart';
 import 'package:riya_play/services/api_service.dart';
 import 'package:cached_network_image/cached_network_image.dart';
-import 'package:riya_play/screens/video_player_screen.dart';
-import 'package:better_player/better_player.dart';
 import 'package:riya_play/services/preferences_service.dart';
 import 'package:riya_play/theme_provider.dart';
-import 'package:android_intent_plus/android_intent.dart';
 import 'package:riya_play/utils/navigation.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:riya_play/utils/image_cache_manager.dart';
@@ -16,6 +13,7 @@ import 'package:riya_play/utils/episode_naming.dart';
 import 'package:riya_play/utils/app_logger.dart';
 import 'package:riya_play/screens/download_screen.dart';
 import 'package:riya_play/screens/actor_films_screen.dart';
+import 'package:riya_play/utils/video_launcher.dart';
 import 'package:flutter_iconly/flutter_iconly.dart';
 
 class FilmScreen extends StatefulWidget {
@@ -54,20 +52,6 @@ class _FilmScreenState extends State<FilmScreen>
   static final Map<int, DateTime> _seasonsCacheTimestamps = {};
   static final Map<String, List<dynamic>> _episodesCache = {};
   static final Map<String, DateTime> _episodesCacheTimestamps = {};
-
-  String _formatDuration(int seconds) {
-    final duration = Duration(seconds: seconds);
-    String twoDigits(int n) => n.toString().padLeft(2, '0');
-    final hours = twoDigits(duration.inHours);
-    final minutes = twoDigits(duration.inMinutes.remainder(60));
-    final secs = twoDigits(duration.inSeconds.remainder(60));
-
-    if (duration.inHours > 0) {
-      return '$hours:$minutes:$secs';
-    } else {
-      return '$minutes:$secs';
-    }
-  }
 
   @override
   void initState() {
@@ -551,6 +535,41 @@ class _FilmScreenState extends State<FilmScreen>
     );
   }
 
+  /// Serial bo'lmagan film uchun "Ko'rishni boshlash".
+  ///
+  /// Epizod odatda `film.lastSeries` da keladi, lekin ba'zi javoblarda u
+  /// umuman yo'q yoki `track` siz keladi — o'shanda tugma umuman ishlamasdi.
+  /// Bunday holda epizod to'g'ridan-to'g'ri so'raladi.
+  Future<void> _playSingleFilm() async {
+    final lastSeries = film?['lastSeries'] as List<dynamic>? ?? const [];
+    Map<String, dynamic>? episode =
+        lastSeries.isNotEmpty ? lastSeries.first as Map<String, dynamic>? : null;
+    var trackList = episode?['track'] as List<dynamic>?;
+
+    if (trackList == null || trackList.isEmpty) {
+      episode = await ApiService.getFirstEpisode(widget.filmId);
+      trackList = episode?['track'] as List<dynamic>?;
+    }
+    if (!mounted) return;
+
+    final streamUrl =
+        (trackList != null && trackList.isNotEmpty)
+            ? (trackList.first['stream_url'] as String? ?? '')
+            : '';
+    if (episode == null || streamUrl.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Film uchun video mavjud emas")),
+      );
+      return;
+    }
+
+    await _playVideo(
+      streamUrl,
+      film?['name_uz'] ?? 'Noma‘lum',
+      episodeId: episode['id'] as int?,
+    );
+  }
+
   /// [title] pleer sarlavhasi uchun ("3-qism" kabi qisqa nom), [downloadTitle]
   /// esa fayl nomi uchun — epizodlar uchun ular farq qiladi.
   Future<void> _playVideo(
@@ -571,154 +590,18 @@ class _FilmScreenState extends State<FilmScreen>
       }
       return;
     }
+    if (!mounted) return;
 
-    // Pozitsiya faqat serverdan olinadi — lokal nusxa boshqa qurilmada
-    // ko'rilganini bilmaydi va qayta o'rnatishda yo'qoladi.
-    final savedPosition =
-        episodeId == null
-            ? null
-            : await ApiService.getWatchedSeconds(episodeId);
-
-    bool? resumePlayback;
-    if (savedPosition != null && savedPosition > 0) {
-      resumePlayback = await showDialog<bool>(
-        context: context,
-        builder:
-            (context) => AlertDialog(
-              title: const Text("Davom ettirish"),
-              content: Text(
-                "'$title' ni ${_formatDuration(savedPosition)} dan davom ettirishni xohlaysizmi?",
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context, false),
-                  child: const Text("Yo‘q"),
-                ),
-                TextButton(
-                  onPressed: () => Navigator.pop(context, true),
-                  child: const Text("Ha"),
-                ),
-              ],
-            ),
-      );
-
-      if (resumePlayback == null) return;
-    }
-
-    final selectedPlayer = await showDialog<String>(
-      context: context,
-      builder:
-          (context) => AlertDialog(
-            title: const Text("Pleerni tanlang"),
-            content: SizedBox(
-              width: double.maxFinite,
-              child: ListView(
-                shrinkWrap: true,
-                children: [
-                  ListTile(
-                    leading: const Icon(Icons.play_circle_filled),
-                    title: const Text("Ichki pleer: Better Player"),
-                    onTap: () => Navigator.pop(context, 'better_player'),
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.video_library),
-                    title: const Text("Tashqi pleer bilan ochish"),
-                    onTap: () => Navigator.pop(context, 'external'),
-                  ),
-                  ListTile(
-                    leading: const Icon(Icons.download),
-                    title: const Text("Yuklab olish"),
-                    onTap: () => Navigator.pop(context, 'download'),
-                  ),
-                ],
-              ),
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text("Bekor qilish"),
-              ),
-            ],
-          ),
+    // Pozitsiya so'rovi, "Davom ettirish?" va pleer tanlash dialoglari
+    // `VideoLauncher` da — bu ekran bilan `FilmsFullScreen` da bir xil nusxa
+    // turardi va faqat bittasi tuzatilar edi.
+    await VideoLauncher.playWithChooser(
+      context,
+      url: validUrl,
+      title: title,
+      downloadTitle: downloadTitle,
+      episodeId: episodeId,
     );
-
-    if (selectedPlayer == null) return;
-
-    if (selectedPlayer == 'download') {
-      if (mounted) {
-        Navigator.push(
-          context,
-          createSlideRoute(
-            DownloadScreen(
-              videoUrl: validUrl,
-              title: downloadTitle ?? title,
-            ),
-          ),
-        );
-      }
-      return;
-    }
-
-    if (selectedPlayer == 'better_player') {
-      if (mounted) {
-        await Navigator.push(
-          context,
-          createSlideRoute(
-            VideoPlayerScreen(
-              videoUrl: validUrl,
-              title: title,
-              episodeId: episodeId,
-              liveStream: false,
-              autoPlay: true,
-              fullScreenByDefault: false,
-              deviceOrientationsOnFullScreen: const [
-                DeviceOrientation.landscapeLeft,
-                DeviceOrientation.landscapeRight,
-              ],
-              deviceOrientationsAfterFullScreen: const [
-                DeviceOrientation.portraitUp,
-                DeviceOrientation.portraitDown,
-              ],
-              autoDetectFullscreenDeviceOrientation: false,
-              controlsConfiguration: const BetterPlayerControlsConfiguration(
-                enableFullscreen: true,
-                enablePlayPause: true,
-                enableMute: true,
-                enableProgressText: true,
-                enableSkips: true,
-                enableQualities: true,
-                enableAudioTracks: true,
-              ),
-              notificationConfiguration:
-                  const BetterPlayerNotificationConfiguration(
-                    showNotification: false,
-                  ),
-              startAt:
-                  resumePlayback == true && savedPosition != null
-                      ? Duration(seconds: savedPosition)
-                      : null,
-            ),
-          ),
-        );
-      }
-    } else if (selectedPlayer == 'external') {
-      try {
-        final intent = AndroidIntent(
-          action: 'action_view',
-          data: validUrl,
-          type: 'video/*',
-        );
-        await intent.launch();
-      } catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text("Tashqi pleerni ochishda xato yuz berdi"),
-            ),
-          );
-        }
-      }
-    }
   }
 
   void _precacheImages() {
@@ -981,40 +864,8 @@ class _FilmScreenState extends State<FilmScreen>
                                             ),
                                           ),
                                         );
-                                      } else if (!isSerial() &&
-                                          film != null &&
-                                          film!['lastSeries'] != null &&
-                                          film!['lastSeries'].isNotEmpty) {
-                                        final lastSeriesList =
-                                            film!['lastSeries']
-                                                as List<dynamic>;
-                                        final trackList =
-                                            lastSeriesList.isNotEmpty
-                                                ? lastSeriesList[0]['track']
-                                                    as List<dynamic>?
-                                                : null;
-                                        if (trackList != null &&
-                                            trackList.isNotEmpty) {
-                                          final streamUrl =
-                                              trackList[0]['stream_url'] ?? '';
-                                          _playVideo(
-                                            streamUrl,
-                                            film!['name_uz'] ?? 'Noma‘lum',
-                                            episodeId:
-                                                lastSeriesList[0]['id']
-                                                    as int?,
-                                          );
-                                        } else {
-                                          ScaffoldMessenger.of(
-                                            context,
-                                          ).showSnackBar(
-                                            const SnackBar(
-                                              content: Text(
-                                                "Film uchun video mavjud emas",
-                                              ),
-                                            ),
-                                          );
-                                        }
+                                      } else {
+                                        _playSingleFilm();
                                       }
                                     },
                                     style: ElevatedButton.styleFrom(
