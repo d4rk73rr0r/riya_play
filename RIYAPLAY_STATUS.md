@@ -559,6 +559,27 @@ the limit on their second check. Two layers now protect against it:
    (`releases/download/<tag>/app-<abi>-release.apk`) and confirmed with a HEAD
    request, which also yields the size from `Content-Length`.
 
+**Repeat-prompt guard (added 2026-08-15 after the `v1.0.3` test).** When the
+user starts an install, the release tag is stored under `ota_installed_tag`.
+The **automatic** check skips a release whose tag equals that value; the
+manual check still shows it. This exists because a release APK can carry a
+`versionName` that does not match its tag — see the packaging pitfall below —
+in which case the app would otherwise offer the same update forever.
+
+**Packaging pitfall — `android/local.properties` overrides `pubspec.yaml`.**
+`flutter build` mirrors the version into `android/local.properties` as
+`flutter.versionName` / `flutter.versionCode`, and `build.gradle.kts` reads
+`flutter.versionCode` / `flutter.versionName` from there. A stale pair in that
+(gitignored) file silently overrides `pubspec.yaml` on every later build. That
+is why the published `v1.0.2` and `v1.0.3` assets are **byte-identical**
+(47,297,998 bytes each) and both report `versionName=1.0.1, versionCode=2002`:
+the APK was never actually rebuilt with a new version. Before publishing,
+check the value the build really produced:
+
+```
+adb shell dumpsys package uz.mrlg.riyaplay | grep -E "versionName|versionCode"
+```
+
 **How a release is detected.** `GET
 https://api.github.com/repos/d4rk73rr0r/rplay-releases/releases/latest`.
 That endpoint already excludes drafts and pre-releases, so an unfinished
@@ -701,6 +722,17 @@ device:
 | Constructed split-APK URLs, HEAD | `arm64-v8a` → 200 / 45.1 MB, `armeabi-v7a` → 200 / 54.8 MB, `x86_64` → 200 / 48.8 MB, `riscv64` → 404 (loop moves on) |
 | 6-hour startup interval | Verified: after a check, a fresh app start performed no request and showed nothing; the manual check still worked |
 
+**Against the `v1.0.3` release (2026-08-15, device on `1.0.2-debug`):**
+
+| Test | Result |
+| --- | --- |
+| Startup check | Dialog "Yangi versiya mavjud", "Versiya 1.0.3 · 45.1 MB", release note "OTA yuklanish rate-limit fix qilindi." |
+| "Keyinroq" | Dialog closed, app usable |
+| Manual check right after "Keyinroq" | Dialog shown again — the session flag only silences the automatic check |
+| "Yangilash" | 45 MB downloaded and handed to the system installer; `PackageInstallerSession: Session installed` and `uz.mrlg.riyaplay` `lastUpdateTime` moved — the full chain works |
+| Installed result | Still `versionName=1.0.1, versionCode=2002` — the published APK's own version was never bumped (see the packaging pitfall) |
+| Repeat-prompt guard | With `ota_installed_tag=v1.0.3` stored, the startup check logs "Yangilanish so'ralmadi: v1.0.3 allaqachon o'rnatilgan" and shows nothing, while the manual check still offers it |
+
 **Player memory (device, 2026-08-13, part 4).** `dumpsys meminfo`, Java heap,
 sampled after each play → Back cycle of ~25 s:
 
@@ -829,7 +861,8 @@ verified on device.)
 | ~~Verify `latestviewed_screen` tap on device~~ | Last unexercised continue-watching path | `lib/screens/latestviewed_screen.dart` | Medium | **DONE** | Resume dialog and playback both confirmed (2591 s) |
 | ~~Set the real OTA repository~~ | Placeholder repo name from the port | `lib/services/update_service.dart` | Medium | **DONE (2026-08-15)** | Now `d4rk73rr0r/rplay-releases`, with manual check, error messages and version comparison |
 | ~~Publish the first release and re-test~~ | — | — | High | **DONE (2026-08-15)** | `v1.0.2` published with three split APKs; a `1.0.1-debug` device was offered the 45 MB arm64 asset |
-| Finish the download+install test against the real release | The reporter saw the dialog but the download/install of a genuine RiyaPlay APK has not been driven to completion | — | Medium | Not started | On a device carrying `1.0.1`, press "Yangilash", let the 45 MB download finish and accept the system install prompt |
+| ~~Finish the download+install test against the real release~~ | — | — | Medium | **DONE (2026-08-15)** | `v1.0.3` downloaded and installed through the app; `PackageInstallerSession: Session installed` |
+| **Republish with a correctly versioned APK** | `v1.0.2` and `v1.0.3` are the same file and both report `versionName=1.0.1, versionCode=2002`, so an updated device still looks outdated | `pubspec.yaml`, `android/local.properties` | High | Not started | Delete the `flutter.versionName` / `flutter.versionCode` lines from `android/local.properties`, set `version:` in `pubspec.yaml`, rebuild with `--split-per-abi`, confirm the version with `dumpsys package`, then upload |
 | ~~Decide the release asset naming~~ | — | `lib/services/update_service.dart` | Medium | **Settled** | `app-<abi>-release.apk`, the default `flutter build apk --split-per-abi` output. The atom fallback now depends on this name — renaming assets breaks it, so keep it |
 | Consider a checksum | `ota_update` supports `sha256checksum`, which would catch a truncated or tampered download | `lib/services/update_service.dart` | Low | Not started | Publish the APK's SHA-256 in the release body or as a second asset and pass it to `execute` |
 | ~~Re-check 5-qism duration~~ | Possible missing tail content | — | Low | **DONE** | Clean re-download is exactly 47:01 and decodes without errors |
@@ -1056,19 +1089,25 @@ New:
 
 ## Next Recommended Step
 
-**Publish `v1.0.3` with the rate-limit fixes and finish the update flow once,
-end to end.** `v1.0.2` is live and is being offered correctly, but it does not
-yet contain the 6-hour interval or the atom fallback, so devices on `1.0.2`
-will keep hitting the API limit on repeated manual checks. Build with the same
-command that produced `v1.0.2`:
+**Republish with an APK whose own version actually changed.** The whole OTA
+chain is now proven end to end, but `v1.0.2` and `v1.0.3` are byte-identical
+files reporting `versionName=1.0.1, versionCode=2002`, so a device that
+installs "1.0.3" still calls itself 1.0.1 and would be offered the same update
+forever (the new `ota_installed_tag` guard hides the nag, it does not fix the
+package). Order of operations:
+
+```
+sed -i '/flutter.versionName=/d;/flutter.versionCode=/d' android/local.properties
+```
+
+then set `version:` in `pubspec.yaml` (e.g. `1.0.4+4`), build, and verify the
+APK really carries it before uploading:
 
 ```
 flutter build apk --release --split-per-abi
+adb install -r build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+adb shell dumpsys package uz.mrlg.riyaplay | grep -E "versionName|versionCode"
 ```
-
-Then, on a device still carrying `1.0.2`, press "Yangilash" in the dialog, let
-the ~45 MB download finish and accept the system install prompt — that is the
-one step of the OTA chain never driven to completion.
 
 **Also still open: repeat the part-4 watch-position reproduction on a release
 build.**

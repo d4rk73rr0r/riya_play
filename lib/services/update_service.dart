@@ -45,6 +45,14 @@ class UpdateService {
   static const Duration _startupCheckInterval = Duration(hours: 6);
   static const String _lastCheckKey = 'ota_last_check_at';
 
+  /// Foydalanuvchi o'rnatishga yuborgan oxirgi reliz tegi. Agar reliz ichidagi
+  /// APK'ning `versionName` i teg bilan mos kelmasa (masalan, `pubspec.yaml`
+  /// yangilanmasdan yig'ilgan bo'lsa), o'rnatishdan keyin ham ilova o'zini
+  /// eski versiya deb biladi va har safar yana "yangilanish bor" deb turadi.
+  /// Shu tegni eslab qolib, avtomatik so'rashni to'xtatamiz — qo'lda
+  /// tekshirish baribir ko'rsatadi.
+  static const String _installedTagKey = 'ota_installed_tag';
+
   /// GitHub rejects requests without a User-Agent, and the JSON shape is
   /// pinned with an explicit Accept header.
   static const Map<String, String> _headers = {
@@ -71,6 +79,14 @@ class UpdateService {
     await _rememberCheckTime();
     if (!context.mounted) return;
     if (outcome case UpdateAvailable(:final info)) {
+      if (await _alreadyInstalled(info.tagName)) {
+        appLogger.d(
+          'Yangilanish so\'ralmadi: ${info.tagName} allaqachon o\'rnatilgan '
+          '(reliz ichidagi versiya teg bilan mos emas)',
+        );
+        return;
+      }
+      if (!context.mounted) return;
       await _showUpdateDialog(context, info);
     } else if (outcome case UpdateCheckFailed(:final message)) {
       appLogger.d('Yangilanishni tekshirish muvaffaqiyatsiz: $message');
@@ -312,6 +328,25 @@ class UpdateService {
     } catch (_) {
       return true;
     }
+  }
+
+  /// Shu teg uchun o'rnatish allaqachon boshlanganmi.
+  static Future<bool> _alreadyInstalled(String tag) async {
+    if (tag.isEmpty) return false;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getString(_installedTagKey) == tag;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<void> _rememberInstalledTag(String tag) async {
+    if (tag.isEmpty) return;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_installedTagKey, tag);
+    } catch (_) {}
   }
 
   static Future<void> _rememberCheckTime() async {
@@ -573,6 +608,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
           _status = 'Yuklanmoqda... ${percent.toInt()}%';
         });
       case OtaStatus.INSTALLING:
+        UpdateService._rememberInstalledTag(widget.info.tagName);
         setState(() {
           _progress = 1;
           _status = 'O‘rnatish oynasi ochildi';
