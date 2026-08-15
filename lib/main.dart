@@ -188,7 +188,7 @@ class _MainScreenState extends State<MainScreen>
     // Yangilanish tekshiruvi bosh ekran chizilgandan keyin — ochilishni
     // sekinlashtirmaydi va xato bo'lsa jim o'tadi.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) UpdateService.checkUpdate(context);
+      if (mounted) UpdateService.checkOnStartup(context);
     });
     _tabController = TabController(length: _screens.length, vsync: this);
     _tabController.addListener(() {

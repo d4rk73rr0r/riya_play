@@ -13,6 +13,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:riya_play/utils/navigation.dart'; // createSlideRoute uchun import
+import 'package:riya_play/services/update_service.dart';
 
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
@@ -287,6 +288,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         ), // PageRouteBuilder bilan o‘tish
                       );
                     },
+                  ),
+                  _buildListTile(
+                    context,
+                    icon: IconlyLight.download,
+                    title: "Yangilanishni tekshirish",
+                    onTap: () => UpdateService.checkManually(context),
                   ),
                   _buildListTile(
                     context,

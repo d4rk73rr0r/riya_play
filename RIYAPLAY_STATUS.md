@@ -63,6 +63,41 @@ The session covered four areas, in order:
    wrong progress denominator, wrong sort order; plus the cards now start
    playback directly instead of opening the film page.
 
+### Session of 2026-08-15 — OTA updates from GitHub Releases
+
+The app ships outside Google Play, so it has to update itself. An
+`update_service.dart` already existed (ported from the TV build) but pointed
+at a repository that does not exist (`riyaplay-releases`), was startup-only,
+and reported nothing when a check failed. It was rewritten against the real
+repository, **`d4rk73rr0r/rplay-releases`**.
+
+**Investigation notes (facts, not assumptions):**
+
+- **The release repository is currently empty.** `releases.atom` has no
+  entries and the releases page renders "There aren't any releases here", so
+  `GET /repos/d4rk73rr0r/rplay-releases/releases/latest` answers **404**. The
+  asset naming convention therefore *could not be inspected* and the picker
+  had to be written defensively (see below).
+- **Version source**: `pubspec.yaml` `version: 1.0.1+2` →
+  `flutter.versionName` / `flutter.versionCode` in
+  `android/app/build.gradle.kts`. Debug builds add `versionNameSuffix =
+  "-debug"`, so `PackageInfo.version` can read `1.0.1-debug` — the parser has
+  to tolerate that. The release install on the test device reports
+  `versionName=1.0.1, versionCode=2002`, i.e. release APKs are built with a
+  custom build number.
+- **Permissions**: the `ota_update` plugin already declares
+  `REQUEST_INSTALL_PACKAGES` and ships its own `FileProvider`
+  (`<applicationId>.ota_update_provider`), so no provider wiring is needed in
+  the app. The permission is now also declared explicitly in the app manifest
+  so the flow is visible to anyone reading it.
+- **Networking**: `ApiClient` is bound to the Riya Play API (auth headers,
+  its own base URL), so the GitHub call stays on plain `package:http`, with a
+  `User-Agent` (GitHub rejects requests without one) and the
+  `application/vnd.github+json` Accept header.
+- **Settings UI**: there is no separate settings screen — `ProfileScreen` is
+  the settings list, built from `_buildListTile`. The manual check was added
+  there.
+
 ### Session of 2026-08-13, part 4 — "00:00 on first playback" and the crash
 
 Reported: a film watched for the first time (Catalog → FilmScreen → play →
@@ -498,6 +533,55 @@ Debug APK builds and installs successfully. Device used for testing:
 | `lib/screens/index_screen.dart` | `IndexScreenProvider.latestViewedFields` (shared constant) and `reloadLatestViewed()`; the card awaits the player, then reloads | Bug 15 | Yes — device |
 | `lib/screens/latestviewed_screen.dart` | `LatestViewedCard.onReturn` wired to the screen's `_refresh` (superseded in part 3 by `RouteAware`) | Bug 15 | Yes — device |
 
+### OTA updates (2026-08-15)
+
+| File | Change | Why | Tested |
+| --- | --- | --- | --- |
+| `lib/services/update_service.dart` | Rewritten: correct repository, `fetchLatest()` returning a sealed `UpdateCheckOutcome` (`UpdateAvailable` / `UpdateUpToDate` / `UpdateCheckFailed`), `AppVersion` comparison, defensive APK picker, themed dialog with release notes and download progress, per-status Uzbek error messages, `checkOnStartup()` and `checkManually()` | The old version queried a non-existent repo, was silent on every failure and had no manual entry point | Yes — device, see the table below |
+| `lib/screens/profile_screen.dart` | "Yangilanishni tekshirish" tile calling `UpdateService.checkManually(context)` | Requirement: Profile → check for updates | Yes — device |
+| `lib/main.dart` | `MainScreen.initState` now calls `checkOnStartup` (renamed from `checkUpdate`) | The name now says which of the two entry points it is | Yes — device |
+| `android/app/src/main/AndroidManifest.xml` | Explicit `REQUEST_INSTALL_PACKAGES` | Already merged in from the plugin; declaring it makes the install flow visible in the manifest | Yes — builds and installs |
+
+**How a release is detected.** `GET
+https://api.github.com/repos/d4rk73rr0r/rplay-releases/releases/latest`.
+That endpoint already excludes drafts and pre-releases, so an unfinished
+release cannot reach users. `tag_name` carries the version and `body` the
+release notes, of which the dialog shows the first ~160 px, scrollable.
+
+**Version comparison.** `AppVersion.parse` pulls the first
+`digits(.digits)*` run out of the string plus an optional `+build`, so
+`v1.2.3`, `1.2.3`, `1.2.3+7` and `1.0.1-debug` all parse. Comparison is
+component-by-component with a build-number tiebreaker, never string
+comparison (`1.10.0` must beat `1.9.0`). An update is offered only when
+`latest > current`; equal or older answers "already up to date", and
+unparseable versions on either side surface as an error instead of a silent
+skip.
+
+**APK selection.** All `.apk` assets are collected, then: an asset whose name
+contains one of the device's `supportedAbis` wins, otherwise one containing
+`universal`, otherwise one with no ABI marker at all, otherwise the first
+APK. This covers both a single universal APK and a per-ABI split without
+knowing which convention the repository will use.
+
+**Download and install.** `OtaUpdate().execute(url, destinationFilename:
+'riyaplay_update.apk')` downloads with progress events and hands the file to
+the system installer through the plugin's `FileProvider`. The dialog cannot
+be dismissed while a download is running (`PopScope(canPop: !_isWorking)`),
+and every `OtaStatus` maps to an Uzbek message with a "Qayta urinish" button:
+permission refused, download error, checksum error, install error, cancelled,
+already running, internal error.
+
+**Error handling.** `fetchLatest()` never throws. `SocketException` →
+"Internetga ulanib bo'lmadi", timeout → "GitHub javob bermadi", 404 → "Reliz
+topilmadi", 403 with `x-ratelimit-remaining: 0` → rate-limit message, any
+other status → "GitHub xatosi (code)", malformed JSON → "Reliz ma'lumotini
+o'qib bo'lmadi", no APK asset → "Relizda APK fayli topilmadi". The startup
+check logs and swallows all of them; the manual check shows them.
+
+**"Keyinroq" behaviour.** `_declinedThisSession` blocks further *automatic*
+prompts for the rest of the process lifetime. The manual check ignores the
+flag, and `_dialogOpen` prevents two dialogs at once.
+
 ### Player lifetime and first-session writes (2026-08-13, part 4)
 
 | File | Change | Why | Tested |
@@ -571,6 +655,23 @@ occasions produced **byte-identical** files (286,810,489 bytes).
 > (= 47:01, exactly the catalogue value), and a full decode reports zero
 > errors. The old file was a stale artifact.
 
+**OTA update (device, 2026-08-15).** The real repository has no releases, so
+the "update available" and "up to date" paths were exercised by temporarily
+pointing the two repository constants at public repositories with real
+releases, then reverting and rebuilding. Every row below was observed on the
+device:
+
+| Test | How | Result |
+| --- | --- | --- |
+| Startup check, no release published | real repo | Silent; log `Yangilanishni tekshirish muvaffaqiyatsiz: Reliz topilmadi`, app unaffected |
+| Manual check, no release published | real repo | Snackbar "Reliz topilmadi" |
+| Update available | temporary repo `RikkaApps/Shizuku` (tag `v13.6.0`) | Dialog "Yangi versiya mavjud", "Versiya 13.6.0 · 2.5 MB", scrollable release notes, "Keyinroq" / "Yangilash" |
+| Update now → download | same | Progress 9% → 15% → 96% → done; buttons hidden while downloading |
+| Install step | same | The system installer was handed the APK (focus left the app and the app restarted afterwards). Nothing was installed: the device already had that exact version (`firstInstallTime=2026-01-09`), so the installer had nothing to do |
+| Already up to date | temporary repo `Ashinch/ReadYou` (tag `0.10.x` < `1.0.1`) | Snackbar "Ilova eng so'nggi versiyada (1.0.1-debug)" — note the `-debug` suffix parsed correctly |
+| No internet | `adb shell svc data disable` | Log `Yangilanishni tekshirish muvaffaqiyatsiz: Internetga ulanib bo'lmadi`, no crash |
+| GitHub rate limit (403) | observed from the workstation while inspecting the API | Handled by a dedicated branch; **not** reproduced on the device |
+
 **Player memory (device, 2026-08-13, part 4).** `dumpsys meminfo`, Java heap,
 sampled after each play → Back cycle of ~25 s:
 
@@ -634,8 +735,16 @@ was **stopped before a raw single-stream baseline was captured**.
 - fMP4 (`#EXT-X-MAP`), rotating AES keys and `#EXT-X-BYTERANGE` paths were
   never exercised — this provider serves single-key MPEG-TS only.
 - The disk-space pre-check never triggered (device had ample free space).
-- OTA update was only observed failing gracefully with no network.
 - `CacheService` cold-start behaviour was not explicitly measured.
+- **OTA, not executed against the real repository**: it has no releases yet,
+  so the genuine "update available → download → install" path for a RiyaPlay
+  APK has never run. A publish-and-retest is the first remaining-work item.
+- **OTA, install confirmation dialog**: the system installer received the APK
+  but nothing could be installed (the test APK's exact version was already on
+  the device), so "user accepts the install" and "user cancels the install"
+  were not separately observed.
+- **OTA, corrupted download**: no checksum is passed today, so
+  `CHECKSUM_ERROR` cannot occur; the branch exists but is unreachable.
 
 ---
 
@@ -689,7 +798,10 @@ verified on device.)
 | Finish the throughput comparison | No single-connection baseline was ever captured | `lib/services/download_service.dart` | Low | **Closed deliberately** | Not pursued: the sustained value is now settled (24), and a baseline run costs another ~450 MB of mobile data for a number that would not change the decision. Reopen only if the CDN or the concurrency value changes |
 | ~~Remove or gate `_DownloadProfile` instrumentation~~ | Debug scaffolding in production code | `lib/services/download_service.dart` | Medium | **DONE** | `profile.report()` now guarded by `kDebugMode`, so release builds neither format nor log it. The collection itself (stopwatches) is left in place — it is a few microseconds per batch |
 | ~~Verify `latestviewed_screen` tap on device~~ | Last unexercised continue-watching path | `lib/screens/latestviewed_screen.dart` | Medium | **DONE** | Resume dialog and playback both confirmed (2591 s) |
-| Set the real OTA repository | `repoName = "riyaplay-releases"` is a placeholder chosen during the port | `lib/services/update_service.dart` | Medium | Not started | Confirm the actual GitHub releases repo, or remove the OTA feature if the app ships via Play |
+| ~~Set the real OTA repository~~ | Placeholder repo name from the port | `lib/services/update_service.dart` | Medium | **DONE (2026-08-15)** | Now `d4rk73rr0r/rplay-releases`, with manual check, error messages and version comparison |
+| Publish the first release and re-test end to end | The repository is empty, so the real "update available" path has never run against it; the install step was only observed with a third-party APK that was already installed | — | High | Not started | Build a release APK, publish it as `v1.0.2` (or higher) with the APK attached, then run both the startup and the manual check on a device carrying `1.0.1` |
+| Decide the release asset naming | The picker guesses (ABI name → `universal` → no-marker → first APK) because there was nothing to inspect | `lib/services/update_service.dart` | Medium | Not started | Pick one convention (e.g. `riyaplay-<version>-arm64-v8a.apk` / `-universal.apk`) and keep it stable |
+| Consider a checksum | `ota_update` supports `sha256checksum`, which would catch a truncated or tampered download | `lib/services/update_service.dart` | Low | Not started | Publish the APK's SHA-256 in the release body or as a second asset and pass it to `execute` |
 | ~~Re-check 5-qism duration~~ | Possible missing tail content | — | Low | **DONE** | Clean re-download is exactly 47:01 and decodes without errors |
 | Investigate debug-mode poster rendering | Affects development experience | `lib/widgets/poster_card.dart`, `lib/utils/image_cache_manager.dart` | Low | Not started | Compare `CachedNetworkImage` behaviour between debug and release |
 | ~~Route `film_screen` / `films_full_screen` playback through `VideoLauncher`~~ | Duplicated `_playVideo`, no flush wait, no refresh | `lib/screens/film_screen.dart`, `lib/screens/films_full_screen.dart`, `lib/utils/video_launcher.dart` | Medium | **DONE** | Both delegate to `VideoLauncher.playWithChooser`; verified on device |
@@ -820,7 +932,7 @@ New:
 - `lib/services/download_manager.dart` — the download queue.
 - `lib/services/error_handler.dart` — `ApiErrorHandler`.
 - `lib/services/cache_service.dart` — short-lived home cache.
-- `lib/services/update_service.dart` — GitHub OTA.
+- `lib/services/update_service.dart` — GitHub OTA; rewritten 2026-08-15 against `d4rk73rr0r/rplay-releases` (manual check, `AppVersion` comparison, user-visible errors).
 - `lib/screens/actor_films_screen.dart` — films by actor.
 - `lib/utils/latest_viewed.dart` — latest-viewed payload helpers.
 - `lib/utils/video_launcher.dart` — resume-aware player launcher.
@@ -914,7 +1026,20 @@ New:
 
 ## Next Recommended Step
 
-**Build and install a release APK, then repeat the part-4 reproduction on it.**
+**Publish the first GitHub release, which also settles the part-4 rebuild.**
+Build a release APK, bump `version:` in `pubspec.yaml` above `1.0.1`, publish
+it on `d4rk73rr0r/rplay-releases` with the APK attached, and keep the asset
+name stable from then on. That single step both gets the fixed build onto the
+reporter's device and gives the OTA feature something real to find; until a
+release exists, every update check correctly answers "Reliz topilmadi".
+
+Afterwards, verify on a device still carrying the older build: the startup
+dialog appears, "Keyinroq" silences it for that session, the manual check in
+Profile finds the same release, and "Yangilash" downloads and opens the
+installer.
+
+**Also still open: build and install a release APK and repeat the part-4
+reproduction on it.**
 Everything in part 4 was measured on `uz.mrlg.riyaplay.debug`; the release
 install on the test device (`uz.mrlg.riyaplay`, versionCode 2002, last updated
 2026-08-13 18:21) still carries the leaking `safeDispose`, so the reporter will
@@ -930,30 +1055,9 @@ during playback and one on exit, and `second.time` on the server), followed by
 four play → Back cycles while watching `dumpsys meminfo` (expect a bounded
 Java heap, no OOM).
 
-After that, settle the OTA repository in `lib/services/update_service.dart` —
-`repoName = "riyaplay-releases"` is still the placeholder from the port, so the
-update check queries a repository that may not exist. Either point
-`ownerName`/`repoName` at the real releases repository and verify one full
-check → download → install cycle, or remove `update_service.dart`, its
-`MainScreen.initState` call and the `ota_update` dependency.
-
-After that the open items are all Medium/Low and independent: the
-`getFirstEpisode` fallback is still unexercised, the debug-only actor-poster
-rendering is undiagnosed, `ApiErrorHandler` is still missing from several
-screens, and the `tplaytv` backport (periodic sync + `duration` denominator)
-has not been done.
-
-**Next: settle the OTA repository in `lib/services/update_service.dart`.**
-`repoName = "riyaplay-releases"` is a placeholder carried over from the
-`tplaytv` port, so the update check currently queries a repository that may not
-exist. Two coherent outcomes: point `ownerName`/`repoName` at the real GitHub
-releases repository and verify one full check → download → install cycle, or
-remove `update_service.dart`, its `MainScreen.initState` call and the
-`ota_update` dependency (the core-library-desugaring flag in
-`android/app/build.gradle.kts` can stay — it is harmless on its own).
-
-After that, the remaining open items are all Medium/Low and independent:
-debug-only actor-poster rendering, wiring `ApiErrorHandler` into the screens
-that still interpolate raw `$e`, and deduplicating `_playVideo` between
-`film_screen.dart` and `films_full_screen.dart` into
-`lib/utils/video_launcher.dart`.
+The remaining open items are all Medium/Low and independent: the release asset
+naming convention, an optional SHA-256 for the download, the unexercised
+`getFirstEpisode` fallback, the debug-only actor-poster rendering, wiring
+`ApiErrorHandler` into the screens that still interpolate raw `$e`, TV-channel
+playback after the disposal change, and the `tplaytv` backport (periodic sync
++ `duration` denominator).

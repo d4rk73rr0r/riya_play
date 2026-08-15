@@ -21,6 +21,12 @@
         android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
     <uses-permission
         android:name="android.permission.WRITE_SETTINGS"/>
+    <!-- Ilova Play Store orqali tarqatilmaydi: yangilanish GitHub
+         Releases'dan yuklanib, o'rnatish oynasi ochiladi. `ota_update`
+         plagini ham shu ruxsatni e'lon qiladi, lekin bu yerda ochiq
+         turgani manifestni o'qigan odamga oqimni ko'rsatadi. -->
+    <uses-permission
+        android:name="android.permission.REQUEST_INSTALL_PACKAGES"/>
         <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature
         android:name="android.hardware.touchscreen"
