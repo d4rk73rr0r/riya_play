@@ -542,6 +542,23 @@ Debug APK builds and installs successfully. Device used for testing:
 | `lib/main.dart` | `MainScreen.initState` now calls `checkOnStartup` (renamed from `checkUpdate`) | The name now says which of the two entry points it is | Yes — device |
 | `android/app/src/main/AndroidManifest.xml` | Explicit `REQUEST_INSTALL_PACKAGES` | Already merged in from the plugin; declaring it makes the install flow visible in the manifest | Yes — builds and installs |
 
+**Rate limiting (added after the first real release, 2026-08-15).** The
+anonymous GitHub API allows 60 requests per hour **per IP**, and mobile
+carriers put thousands of subscribers behind one address — the reporter hit
+the limit on their second check. Two layers now protect against it:
+
+1. The startup check only queries GitHub if at least `_startupCheckInterval`
+   (6 hours) has passed since the last check; the timestamp lives in
+   `SharedPreferences` under `ota_last_check_at`. The manual check ignores the
+   interval.
+2. When the API answers 403 or 429, the service falls back to
+   `https://github.com/<user>/<repo>/releases.atom`, which is served like any
+   normal page and is **not** rate limited. The feed carries the tag and the
+   release notes but no asset list, so the APK URL is rebuilt from the
+   `--split-per-abi` convention
+   (`releases/download/<tag>/app-<abi>-release.apk`) and confirmed with a HEAD
+   request, which also yields the size from `Content-Length`.
+
 **How a release is detected.** `GET
 https://api.github.com/repos/d4rk73rr0r/rplay-releases/releases/latest`.
 That endpoint already excludes drafts and pre-releases, so an unfinished
@@ -670,7 +687,19 @@ device:
 | Install step | same | The system installer was handed the APK (focus left the app and the app restarted afterwards). Nothing was installed: the device already had that exact version (`firstInstallTime=2026-01-09`), so the installer had nothing to do |
 | Already up to date | temporary repo `Ashinch/ReadYou` (tag `0.10.x` < `1.0.1`) | Snackbar "Ilova eng so'nggi versiyada (1.0.1-debug)" — note the `-debug` suffix parsed correctly |
 | No internet | `adb shell svc data disable` | Log `Yangilanishni tekshirish muvaffaqiyatsiz: Internetga ulanib bo'lmadi`, no crash |
-| GitHub rate limit (403) | observed from the workstation while inspecting the API | Handled by a dedicated branch; **not** reproduced on the device |
+| GitHub rate limit (403) | observed from the workstation while inspecting the API, and reported from the device after the first real release | Now falls back to the atom feed instead of failing |
+
+**After the first real release (`v1.0.2`, published 2026-08-15 with
+`flutter build apk --release --split-per-abi`):**
+
+| Test | Result |
+| --- | --- |
+| Assets published | `app-arm64-v8a-release.apk` 45.1 MB, `app-armeabi-v7a-release.apk` 54.8 MB, `app-x86_64-release.apk` 48.8 MB |
+| Update offered to a `1.0.1-debug` device | Dialog showed the arm64 asset — 45 MB — i.e. the ABI-specific pick is correct |
+| Second check minutes later | GitHub API returned 403 (rate limit) → snackbar. This is what prompted the interval + atom fallback |
+| Atom fallback, forced on (temporary build) | Startup and manual checks resolved `v1.0.2` from the feed and correctly reported "Ilova eng so'nggi versiyada (1.0.2-debug)" once the device itself carried 1.0.2 |
+| Constructed split-APK URLs, HEAD | `arm64-v8a` → 200 / 45.1 MB, `armeabi-v7a` → 200 / 54.8 MB, `x86_64` → 200 / 48.8 MB, `riscv64` → 404 (loop moves on) |
+| 6-hour startup interval | Verified: after a check, a fresh app start performed no request and showed nothing; the manual check still worked |
 
 **Player memory (device, 2026-08-13, part 4).** `dumpsys meminfo`, Java heap,
 sampled after each play → Back cycle of ~25 s:
@@ -799,8 +828,9 @@ verified on device.)
 | ~~Remove or gate `_DownloadProfile` instrumentation~~ | Debug scaffolding in production code | `lib/services/download_service.dart` | Medium | **DONE** | `profile.report()` now guarded by `kDebugMode`, so release builds neither format nor log it. The collection itself (stopwatches) is left in place — it is a few microseconds per batch |
 | ~~Verify `latestviewed_screen` tap on device~~ | Last unexercised continue-watching path | `lib/screens/latestviewed_screen.dart` | Medium | **DONE** | Resume dialog and playback both confirmed (2591 s) |
 | ~~Set the real OTA repository~~ | Placeholder repo name from the port | `lib/services/update_service.dart` | Medium | **DONE (2026-08-15)** | Now `d4rk73rr0r/rplay-releases`, with manual check, error messages and version comparison |
-| Publish the first release and re-test end to end | The repository is empty, so the real "update available" path has never run against it; the install step was only observed with a third-party APK that was already installed | — | High | Not started | Build a release APK, publish it as `v1.0.2` (or higher) with the APK attached, then run both the startup and the manual check on a device carrying `1.0.1` |
-| Decide the release asset naming | The picker guesses (ABI name → `universal` → no-marker → first APK) because there was nothing to inspect | `lib/services/update_service.dart` | Medium | Not started | Pick one convention (e.g. `riyaplay-<version>-arm64-v8a.apk` / `-universal.apk`) and keep it stable |
+| ~~Publish the first release and re-test~~ | — | — | High | **DONE (2026-08-15)** | `v1.0.2` published with three split APKs; a `1.0.1-debug` device was offered the 45 MB arm64 asset |
+| Finish the download+install test against the real release | The reporter saw the dialog but the download/install of a genuine RiyaPlay APK has not been driven to completion | — | Medium | Not started | On a device carrying `1.0.1`, press "Yangilash", let the 45 MB download finish and accept the system install prompt |
+| ~~Decide the release asset naming~~ | — | `lib/services/update_service.dart` | Medium | **Settled** | `app-<abi>-release.apk`, the default `flutter build apk --split-per-abi` output. The atom fallback now depends on this name — renaming assets breaks it, so keep it |
 | Consider a checksum | `ota_update` supports `sha256checksum`, which would catch a truncated or tampered download | `lib/services/update_service.dart` | Low | Not started | Publish the APK's SHA-256 in the release body or as a second asset and pass it to `execute` |
 | ~~Re-check 5-qism duration~~ | Possible missing tail content | — | Low | **DONE** | Clean re-download is exactly 47:01 and decodes without errors |
 | Investigate debug-mode poster rendering | Affects development experience | `lib/widgets/poster_card.dart`, `lib/utils/image_cache_manager.dart` | Low | Not started | Compare `CachedNetworkImage` behaviour between debug and release |
@@ -1026,20 +1056,22 @@ New:
 
 ## Next Recommended Step
 
-**Publish the first GitHub release, which also settles the part-4 rebuild.**
-Build a release APK, bump `version:` in `pubspec.yaml` above `1.0.1`, publish
-it on `d4rk73rr0r/rplay-releases` with the APK attached, and keep the asset
-name stable from then on. That single step both gets the fixed build onto the
-reporter's device and gives the OTA feature something real to find; until a
-release exists, every update check correctly answers "Reliz topilmadi".
+**Publish `v1.0.3` with the rate-limit fixes and finish the update flow once,
+end to end.** `v1.0.2` is live and is being offered correctly, but it does not
+yet contain the 6-hour interval or the atom fallback, so devices on `1.0.2`
+will keep hitting the API limit on repeated manual checks. Build with the same
+command that produced `v1.0.2`:
 
-Afterwards, verify on a device still carrying the older build: the startup
-dialog appears, "Keyinroq" silences it for that session, the manual check in
-Profile finds the same release, and "Yangilash" downloads and opens the
-installer.
+```
+flutter build apk --release --split-per-abi
+```
 
-**Also still open: build and install a release APK and repeat the part-4
-reproduction on it.**
+Then, on a device still carrying `1.0.2`, press "Yangilash" in the dialog, let
+the ~45 MB download finish and accept the system install prompt — that is the
+one step of the OTA chain never driven to completion.
+
+**Also still open: repeat the part-4 watch-position reproduction on a release
+build.**
 Everything in part 4 was measured on `uz.mrlg.riyaplay.debug`; the release
 install on the test device (`uz.mrlg.riyaplay`, versionCode 2002, last updated
 2026-08-13 18:21) still carries the leaking `safeDispose`, so the reporter will

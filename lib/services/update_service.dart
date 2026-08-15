@@ -8,6 +8,7 @@ import 'package:http/http.dart' as http;
 import 'package:ota_update/ota_update.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:riya_play/theme_provider.dart';
 import 'package:riya_play/utils/app_logger.dart';
 
@@ -24,6 +25,25 @@ class UpdateService {
 
   static const String releasesUrl =
       "https://api.github.com/repos/$githubUser/$repoName/releases/latest";
+
+  /// API'ning anonim chegarasi — bitta IP uchun soatiga 60 so'rov. Mobil
+  /// operatorlar minglab abonentni bitta tashqi IP ortida ushlaydi, shuning
+  /// uchun chegara tez tugaydi. Atom lentasi oddiy sayt sifatida beriladi va
+  /// bu chegaraga kirmaydi — 403 kelganda shunga tushamiz.
+  static const String atomUrl =
+      "https://github.com/$githubUser/$repoName/releases.atom";
+
+  /// Flutter `--split-per-abi` bilan yig'ilgan fayl nomlari. Atom lentasida
+  /// asset ro'yxati yo'q, shuning uchun havola shu qolipdan tuziladi va
+  /// mavjudligi HEAD so'rovi bilan tekshiriladi.
+  static String _splitApkUrl(String tag, String abi) =>
+      "https://github.com/$githubUser/$repoName/releases/download/$tag/app-$abi-release.apk";
+
+  /// Ishga tushishdagi tekshiruv shu oraliqdan tez-tez so'ramaydi. Bu ham
+  /// chegarani tejaydi: ilova kuniga o'n marta ochilsa ham GitHub'ga bir
+  /// necha marta murojaat qilinadi.
+  static const Duration _startupCheckInterval = Duration(hours: 6);
+  static const String _lastCheckKey = 'ota_last_check_at';
 
   /// GitHub rejects requests without a User-Agent, and the JSON shape is
   /// pinned with an explicit Accept header.
@@ -45,8 +65,10 @@ class UpdateService {
   /// halaqit bermasligi kerak.
   static Future<void> checkOnStartup(BuildContext context) async {
     if (!Platform.isAndroid || _declinedThisSession || _dialogOpen) return;
+    if (!await _startupIntervalElapsed()) return;
 
     final outcome = await fetchLatest();
+    await _rememberCheckTime();
     if (!context.mounted) return;
     if (outcome case UpdateAvailable(:final info)) {
       await _showUpdateDialog(context, info);
@@ -71,6 +93,7 @@ class UpdateService {
     );
 
     final outcome = await fetchLatest();
+    await _rememberCheckTime();
     if (!context.mounted) return;
     Navigator.of(context, rootNavigator: true).pop(); // Kutish oynasi
     if (!context.mounted) return;
@@ -119,11 +142,10 @@ class UpdateService {
     if (response.statusCode == 404) {
       return const UpdateCheckFailed("Reliz topilmadi");
     }
-    if (response.statusCode == 403 &&
-        response.headers['x-ratelimit-remaining'] == '0') {
-      return const UpdateCheckFailed(
-        "GitHub so'rovlar chegarasiga yetildi, birozdan keyin urinib ko'ring",
-      );
+    if (response.statusCode == 403 || response.statusCode == 429) {
+      // Chegara — API o'rniga atom lentasidan o'qiymiz.
+      appLogger.d('GitHub API chegarasi (${response.statusCode}), atom lentasi');
+      return _fetchFromAtom(current, currentName);
     }
     if (response.statusCode != 200) {
       return UpdateCheckFailed(
@@ -169,6 +191,137 @@ class UpdateService {
         apkBytes: apk.size,
       ),
     );
+  }
+
+  /// API chegarasi tugaganda ishlatiladigan zaxira yo'l.
+  ///
+  /// `releases.atom` oddiy sayt manzili — u yerda so'rov chegarasi yo'q,
+  /// lekin asset ro'yxati ham yo'q: faqat teg va reliz izohi bor. Shuning
+  /// uchun APK havolasi `--split-per-abi` qolipidan tuzilib, HEAD so'rovi
+  /// bilan tekshiriladi.
+  static Future<UpdateCheckOutcome> _fetchFromAtom(
+    AppVersion current,
+    String currentName,
+  ) async {
+    http.Response response;
+    try {
+      response = await http
+          .get(
+            Uri.parse(atomUrl),
+            headers: const {'User-Agent': 'riya_play-updater'},
+          )
+          .timeout(const Duration(seconds: 15));
+    } on SocketException {
+      return const UpdateCheckFailed("Internetga ulanib bo'lmadi");
+    } on TimeoutException {
+      return const UpdateCheckFailed("GitHub javob bermadi, qayta urinib ko'ring");
+    } catch (e) {
+      return UpdateCheckFailed("Tarmoq xatosi: $e");
+    }
+
+    if (response.statusCode != 200) {
+      return const UpdateCheckFailed(
+        "GitHub so'rovlar chegarasiga yetildi, birozdan keyin urinib ko'ring",
+      );
+    }
+
+    final body = utf8.decode(response.bodyBytes);
+    final tag =
+        RegExp(r'releases/tag/([^"<]+)').firstMatch(body)?.group(1)?.trim() ??
+        '';
+    final latest = AppVersion.parse(tag);
+    if (latest == null) {
+      return const UpdateCheckFailed("Reliz ma'lumotini o'qib bo'lmadi");
+    }
+    if (latest.compareTo(current) <= 0) {
+      return UpdateUpToDate(currentName);
+    }
+
+    final apk = await _findSplitApk(tag);
+    if (apk == null) {
+      return const UpdateCheckFailed("Relizda APK fayli topilmadi");
+    }
+
+    return UpdateAvailable(
+      UpdateInfo(
+        version: latest.toString(),
+        tagName: tag,
+        notes: _plainTextFromAtom(body),
+        apkUrl: apk.url,
+        apkBytes: apk.size,
+      ),
+    );
+  }
+
+  /// Qurilma ABI'lari bo'yicha `app-<abi>-release.apk` havolasini sinab
+  /// ko'radi. HEAD 200 qaytargan birinchisi olinadi.
+  static Future<_ApkAsset?> _findSplitApk(String tag) async {
+    var abis = <String>[];
+    try {
+      abis = (await DeviceInfoPlugin().androidInfo).supportedAbis;
+    } catch (_) {
+      abis = const ['arm64-v8a', 'armeabi-v7a'];
+    }
+
+    for (final abi in abis) {
+      final url = _splitApkUrl(tag, abi);
+      try {
+        final head = await http
+            .head(Uri.parse(url), headers: const {'User-Agent': 'riya_play-updater'})
+            .timeout(const Duration(seconds: 10));
+        if (head.statusCode == 200) {
+          return _ApkAsset(
+            name: 'app-$abi-release.apk',
+            url: url,
+            size: int.tryParse(head.headers['content-length'] ?? '') ?? 0,
+          );
+        }
+      } catch (_) {
+        // Keyingi ABI bilan urinib ko'ramiz.
+      }
+    }
+    return null;
+  }
+
+  /// Atom lentasidagi birinchi yozuvning HTML izohini oddiy matnga aylantirib
+  /// beradi — dialogda teglar ko'rinib qolmasin.
+  static String _plainTextFromAtom(String body) {
+    final content =
+        RegExp(
+          r'<content[^>]*>([\s\S]*?)</content>',
+        ).firstMatch(body)?.group(1) ??
+        '';
+    final unescaped = content
+        .replaceAll(RegExp(r'<[^>]+>'), '')
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&quot;', '"')
+        .replaceAll('&#39;', "'")
+        .replaceAll('&amp;', '&');
+    return unescaped.trim();
+  }
+
+  /// Ishga tushishdagi tekshiruv oralig'i o'tdimi.
+  static Future<bool> _startupIntervalElapsed() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final last = prefs.getInt(_lastCheckKey);
+      if (last == null) return true;
+      final elapsed = DateTime.now().millisecondsSinceEpoch - last;
+      return elapsed >= _startupCheckInterval.inMilliseconds;
+    } catch (_) {
+      return true;
+    }
+  }
+
+  static Future<void> _rememberCheckTime() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_lastCheckKey, DateTime.now().millisecondsSinceEpoch);
+    } catch (_) {
+      // Vaqtni saqlay olmasak, keyingi ochilishda yana tekshiriladi — zarari
+      // yo'q.
+    }
   }
 
   /// Qurilma arxitekturasiga mos APK afzal ko'riladi (yuklama kichikroq
