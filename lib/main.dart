@@ -35,7 +35,9 @@ void main() async {
     DeviceOrientation.portraitDown,
   ]);
   // Yuklashlar ro'yxati ekran ochilishidan oldin tiklanadi, aks holda
-  // "Yuklab olishlar" bir zumga bo'sh ko'rinib qoladi.
+  // "Yuklab olishlar" bir zumga bo'sh ko'rinib qoladi. O'lchangan: 68–93 ms,
+  // va uni kutmaslik birinchi kadr vaqtini o'zgartirmadi — shuning uchun
+  // tartib ataylab shunday qoldirildi.
   await DownloadManager.instance.restore();
   runApp(
     MultiProvider(
@@ -59,19 +61,17 @@ class _RiyaPlayAppState extends State<RiyaPlayApp> {
     initialization();
   }
 
+  /// Splash faqat haqiqiy tayyorgarlik uchun ushlab turiladi.
+  ///
+  /// Ilgari bu yerda uchta kutish bor edi va ikkitasi sun'iy: `Future.doWhile`
+  /// `themeProvider.isInitialized` ni kutardi, lekin u doim `true` — ya'ni
+  /// bitta 100 ms uyquga teng edi; ustiga yana 500 ms `Future.delayed`
+  /// qo'shilgandi. O'lchov: splash 572 ms da olib tashlanardi, shundan ~600 ms
+  /// shu ikki kutish edi. `SharedPreferences` esa haqiqatan kerak — undan
+  /// keyin darrov `_checkAuthToken` o'qiydi.
   void initialization() async {
     try {
-      final themeProvider = Provider.of<ThemeProvider>(context, listen: false);
-      await Future.wait([
-        SharedPreferences.getInstance().then(
-          (prefs) => prefs.getString('auth_token'),
-        ),
-        Future.doWhile(() async {
-          await Future.delayed(const Duration(milliseconds: 100));
-          return !themeProvider.isInitialized;
-        }),
-        Future.delayed(const Duration(milliseconds: 500)),
-      ]);
+      await SharedPreferences.getInstance();
     } catch (e) {
       appLogger.d('Initialization error: $e');
     } finally {

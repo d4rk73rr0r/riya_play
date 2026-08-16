@@ -121,6 +121,191 @@ both being 47,297,998 bytes. The device's release install agrees
 "Republish with a correctly versioned APK" item is therefore **closed**, and
 the earlier note that both releases report `1.0.1 / 2002` was wrong.
 
+### Session of 2026-08-16, part 4 — performance audit
+
+Audit date: **2026-08-16**. Everything below was measured on a real device in
+**profile** mode; no conclusion here comes from a debug build or from reading
+code alone.
+
+#### Testing environment
+
+| | |
+| --- | --- |
+| Flutter | 3.44.9 stable (revision `6b182d2c75`) |
+| Dart | 3.12.2, DevTools 2.57.0 |
+| Device | Samsung SM-A556E (Galaxy A55), Android 16, SDK 36, 1080×2340 @ 120 Hz |
+| Network | mobile data (4G/4G+) throughout |
+| Build mode | `flutter build apk --profile`, Impeller/Vulkan |
+| Package | `uz.mrlg.riyaplay.debug` (see below) |
+
+**Profile builds now install as `.debug`.** `build.gradle.kts` gained a
+`profile` build type with `applicationIdSuffix = ".debug"` and the debug
+signing config. Without it a profile build installs as `uz.mrlg.riyaplay`,
+which would replace the user's release install and fail with
+`INSTALL_FAILED_UPDATE_INCOMPATIBLE` (different signing key). Sharing the debug
+package also means profiling starts from an already logged-in session, which
+the authenticated flows need.
+
+#### How the numbers were taken
+
+- **Startup**: `flutter run --profile --trace-startup`, reading
+  `build/start_up_info.json` (`timeToFirstFrame` etc.). 3–4 runs per
+  configuration.
+- **Flow timings**: temporary `debugPrint` markers on one `Stopwatch` started
+  at Dart `main`, read back with `adb logcat -s flutter`. All of this
+  instrumentation was **removed** before committing.
+- **Frames**: a temporary `SchedulerBinding.addTimingsCallback` probe
+  aggregating build/raster percentiles every 3 s. Also removed.
+- `adb shell dumpsys gfxinfo` is **useless here** — it reports
+  `Total frames rendered: 0` because Flutter renders into its own SurfaceView
+  and bypasses HWUI. Do not reach for it again.
+- `appLogger` output does **not** reach logcat in profile builds (only
+  `debugPrint` does), which is why the instrumentation used `debugPrint`.
+
+#### Baseline (before any change)
+
+| Metric | Value | Runs |
+| --- | --- | --- |
+| `timeToFrameworkInit` | 414–428 ms | 4 |
+| `timeToFirstFrame` | 1007–1036 ms | 4 |
+| `timeToFirstFrameRasterized` | 1041–1066 ms | 4 |
+| Splash removed (Dart clock) | 569–596 ms | 3 |
+| `DownloadManager.restore()` | 68–93 ms | 3 |
+| Home fully loaded | 4643–5038 ms | 3 |
+| Home idle frame build p50 / p90 | 3.5 / 4.0 ms | — |
+| Home idle frame raster p50 / p90 | 2.6 / 3.3 ms | — |
+| Home scroll build p90 / raster p90 | 2.4 / 2.7 ms, ~0 % jank | — |
+| Catalog scroll build p90 / raster p90 | 1.7 / 4.8 ms, 1–2 % jank | — |
+
+#### Prioritized findings
+
+| Priority | Area | Problem | Evidence | Impact | Fix |
+| --- | --- | --- | --- | --- | --- |
+| **CRITICAL** | Home / network | The entire home data set is fetched **twice** on every cold start | Two complete sets of markers per launch, second starting ~1000 ms after the first, in 3/3 runs | ~18 duplicated HTTP requests per launch (5 sections + one per category) | Only refetch on a real offline→online transition |
+| **HIGH** | Home / network | The five home sections are fetched **sequentially** | banners 0.65 s → +1.0 s → +0.7 s → +0.25 s → +1.7 s ≈ 4.3 s | ~2.5 s of avoidable wall time | `Future.wait` over the five independent fetches |
+| **HIGH** | Startup | ~600 ms of the first frame is **artificial waiting** | `timeAfterFrameworkInit` 593–615 ms; the code holds the splash for `Future.delayed(500 ms)` plus a `Future.doWhile` that sleeps 100 ms waiting on a flag that is hardcoded `true` | ~0.5 s added to every launch | Hold the splash only for the `SharedPreferences` warm-up |
+| **MEDIUM** | Home / rendering | The carousel's 6 s ring indicator rebuilds a widget subtree **every vsync** | Home-tab idle build p50 3.5 ms vs 1.2 ms with the animation disabled | ~2.3 ms of build per frame at ~120 fps, permanently, while the home tab is visible | Drive `CustomPainter` from the controller via `repaint:` and isolate it with a `RepaintBoundary` |
+| **LOW** | Home / network | `_checkInternetConnection()` does a DNS lookup of `google.com` before every home load | 30–190 ms measured, 5 s timeout in the worst case | small today, unbounded on a hostile network | Not changed — see "not implemented" |
+
+#### Rejected hypotheses (measured, then dropped)
+
+- **`await DownloadManager.instance.restore()` before `runApp`.** It costs
+  68–93 ms, but making it non-blocking changed `timeToFirstFrame` by nothing
+  (1006–1028 ms vs 1007–1036 ms). Left as is — the ordering is deliberate.
+- **`GoogleFonts.poppinsTextTheme` in the theme.** Bypassing it entirely left
+  `timeToFirstFrame` unchanged (1003–1024 ms). Not a startup cost.
+- **Scrolling / list rendering.** Home and catalog scroll at build p90 ≤ 2.4 ms
+  and raster p90 ≤ 4.8 ms against an 8.3 ms budget, with 0–2 % janky frames.
+  There is no rendering bottleneck to fix, so no widget was "optimized"
+  speculatively.
+
+#### Optimizations implemented
+
+**1 — Home data was fetched twice per launch**
+
+```
+Problem:        every cold start issued the whole home API set twice
+Root cause:     `Connectivity().onConnectivityChanged` emits the *current*
+                state on subscribe, and the handler treated any non-offline
+                event as "connection restored" and refetched
+Change:         `_wasOffline` flag; refetch only on offline → online
+Before:         two complete marker sets per launch (3/3 runs)
+After:          one (3/3 runs)
+Improvement:    ~50 % of home HTTP traffic removed
+Regression:     offline → online still refetches, because that path sets
+                `_wasOffline = true` first
+```
+
+**2 — Home sections fetched sequentially**
+
+```
+Problem:        home took ~4.3 s to finish loading
+Root cause:     five independent `await`s in a row in `_fetchInitialData`
+                (the file even carried a TODO saying so)
+Change:         one `Future.wait` over all five
+Before:         4643–5038 ms to fully loaded (3 runs)
+After:          1594–2154 ms, median ~1837 ms (3 runs)
+Improvement:    ~62 % faster, ~3.1 s saved
+Regression:     error handling unchanged; `notifyAfterUpdates()` still runs
+                once after everything settles
+```
+
+**3 — Artificial startup delay**
+
+```
+Problem:        ~600 ms of the first frame was padding
+Root cause:     `initialization()` awaited `Future.delayed(500 ms)` and a
+                `Future.doWhile` polling `themeProvider.isInitialized`, which
+                is hardcoded `true` and so cost exactly one 100 ms sleep
+Change:         hold the splash only for `SharedPreferences.getInstance()`
+Before:         splash removed at 569–596 ms; `timeToFirstFrame` 1007–1036 ms
+After:          splash removed at 73–88 ms; `timeToFirstFrame` 450–630 ms
+Improvement:    ~45 % faster to first frame, ~450 ms saved
+Regression:     `_checkAuthToken` reads the same prefs instance immediately
+                afterwards, so it is warm; no spinner flash observed
+```
+
+**4 — Carousel indicator rebuilt the tree every frame**
+
+```
+Problem:        the home tab never idles: ~120 fps with build p50 3.5 ms
+Root cause:     a 6 s `AnimationController` fed a `ValueListenableBuilder`
+                that rebuilt the indicator widget on every tick, and the
+                repaint propagated up because nothing bounded it
+Change:         `CircleProgressPainter` takes the `Animation` and passes it to
+                `super(repaint:)`; the `CustomPaint` sits in a `RepaintBoundary`
+Before:         build p50 3.5 ms, raster p50 2.6 ms
+After:          build p50 1.2 ms, raster p50 3.7 ms
+Improvement:    ~1.2 ms less work per idle frame (~14 % of the 8.3 ms budget)
+Regression:     the ring animates exactly as before
+Note:           the `RepaintBoundary` is load-bearing — removing it puts build
+                p50 straight back to 3.2–3.6 ms (measured)
+```
+
+The app still renders ~120 fps while idle on the home tab; the ring animation
+was **not** the cause (disabling it left the frame count unchanged). Whatever
+keeps the pipeline awake — most likely the `carousel_slider` page view — was
+not identified and remains open.
+
+#### Regression tests performed
+
+On the optimized profile build, on device:
+
+- Home renders with banners, continue-watching, recommendations and category
+  rows. **PASS**
+- Continue-watching card → resume dialog ("22:11 dan davom ettirishni
+  xohlaysizmi?") → playback → ~45 s → Back → the card reads **22:57** and moves
+  to the front of the row. The exit write, the server sync and the
+  `didPopNext` refresh all still work. **PASS**
+- Catalog tab loads and scrolls. **PASS**
+- Profile screen renders; "Yangilanishni tekshirish" answers "Ilova eng
+  so'nggi versiyada (1.0.4-profile)", i.e. `AppVersion` comparison still
+  works. **PASS**
+- Android Back out of the player returns to Home without a crash. **PASS**
+- `flutter analyze`: 5 pre-existing infos, the unchanged baseline.
+
+Not re-tested after the changes: authentication (the session was already
+live), TV channels, favourites, downloads, and the full OTA download+install
+chain.
+
+#### Recommended but NOT implemented
+
+- **Drop the `google.com` DNS probe in `_checkInternetConnection()`.** It adds
+  30–190 ms before every home load and can block for 5 s. `sendRequest`
+  already never throws and reports failures, so the probe mostly duplicates
+  work. Left alone because removing it changes the offline-error UX, which
+  needs a product decision.
+- **Find what keeps the home tab rendering at ~120 fps while idle.** Measured
+  and reproducible; the cause was not isolated. Worth a DevTools timeline
+  session.
+- **`_processFilms` runs on the UI isolate** for every category response. It
+  did not show up as a bottleneck at 10 items per category, but it will if the
+  page size grows.
+- **`MainScreen` keeps all five tabs alive** via `KeepAliveWrapper`. This is a
+  deliberate UX choice; it costs memory but was not measured as a problem.
+- **Memory over navigation cycles was NOT measured.** `dumpsys meminfo` cycles
+  were not run in this session — treat leak questions as open.
+
 ### Session of 2026-08-16, part 3 — versioning, and where `2004` came from
 
 **The `versionCode=2004` mystery is solved: it is Flutter's own ABI offset.**
@@ -1034,7 +1219,9 @@ verified on device.)
 | ~~Finish the download+install test against the real release~~ | — | — | Medium | **DONE (2026-08-15)** | `v1.0.3` downloaded and installed through the app; `PackageInstallerSession: Session installed` |
 | ~~Republish with a correctly versioned APK~~ | — | — | High | **DONE / claim was wrong (2026-08-16)** | `aapt dump badging` on the published `v1.0.3` arm64 asset reports `versionCode=2004 versionName=1.0.3`; the device install agrees. Nothing to republish |
 | ~~Find out where `versionCode=2004` comes from~~ | — | `pubspec.yaml` | Medium | **DONE (2026-08-16)** | Flutter's `--split-per-abi` ABI offset (`arm64 = 2000 + N`). `pubspec.yaml` was always the only source; version is now `1.0.4+5` → arm64 `2005` |
-| **Publish `v1.0.4`** | Built and verified locally, not uploaded | — | Medium | Not started | Upload `app-<abi>-release.apk` from `build/app/outputs/flutter-apk/` to a `v1.0.4` release, then re-run the OTA check on a device |
+| **Publish `v1.0.4`** | Built and verified locally, not uploaded | — | Medium | Not started | Upload `app-<abi>-release.apk` from `build/app/outputs/flutter-apk/` to a `v1.0.4` release, then re-run the OTA check on a device. Note the binaries in that directory now also carry the part-4 performance work |
+| **Find the idle ~120 fps redraw on the home tab** | Measured, cause not isolated; the ring animation was ruled out | `lib/screens/index_screen.dart` | Medium | Not started | DevTools timeline on a profile build while the home tab sits untouched |
+| **Measure memory over navigation cycles** | Not covered by the audit | — | Medium | Not started | `dumpsys meminfo` across repeated Home → Catalog → FilmScreen → Player → Back cycles |
 | **Re-measure segment concurrency at 48** | Raised from 24 by the owner's decision without a new measurement | `lib/services/download_service.dart` | Medium | Not started | Download one ~450 MB episode and compare throughput and stability against the recorded 24 → 9.11 MB/s effective |
 | **Run the install-flow tests on a release build** | Every part-2 result was measured on `uz.mrlg.riyaplay.debug` | — | Medium | Not started | Same four scenarios against `uz.mrlg.riyaplay` once a newer release exists to offer |
 | ~~Decide the release asset naming~~ | — | `lib/services/update_service.dart` | Medium | **Settled** | `app-<abi>-release.apk`, the default `flutter build apk --split-per-abi` output. The atom fallback now depends on this name — renaming assets breaks it, so keep it |
@@ -1143,7 +1330,9 @@ Modified:
 - `lib/main.dart` — `DownloadManager.instance.restore()` before `runApp`; OTA check in `MainScreen.initState`; 2026-08-13: global `routeObserver`.
 - `lib/screens/film_screen.dart` — cast strip + `_CastTile`, `ActorFilmsScreen` navigation, `episodeId` plumbing, server-only resume, status-bar scrim, dead `flexibleSpace` removed.
 - `lib/screens/films_full_screen.dart` — batch/season download, multi-select mode, `PopScope`, `episodeId` plumbing, server-only resume, `ApiErrorHandler`.
-- `lib/screens/index_screen.dart` — `_primeFromCache`, cache writes, continue-watching progress/colour fix, `VideoLauncher` tap.
+- `lib/screens/index_screen.dart` — `_primeFromCache`, cache writes, continue-watching progress/colour fix, `VideoLauncher` tap; 2026-08-16 (part 4): `_wasOffline` guard, parallel `Future.wait` home load, `CircleProgressPainter` driven by `repaint:` inside a `RepaintBoundary`.
+- `lib/main.dart` — 2026-08-16 (part 4): `initialization()` no longer pads the splash with `Future.delayed`/`Future.doWhile`.
+- `android/app/build.gradle.kts` — 2026-08-16 (part 4): `profile` build type installs as `.debug` with the debug signing config.
 - `lib/screens/latestviewed_screen.dart` — correct film id, progress helper, tap → playback, long-press → film page.
 - `lib/screens/video_player_screen.dart` — server-only watch position, real `startAt` field; 2026-08-13: working exit write, 30 s periodic sync, `pendingPositionFlush`.
 - `lib/utils/video_launcher.dart` — 2026-08-13: waits for the exit write before the caller reloads its list.
@@ -1276,6 +1465,20 @@ New:
   `aapt dump badging`: `v1.0.3` arm64 is `versionCode=2004 versionName=1.0.3`.
   Equal asset sizes between `v1.0.2` and `v1.0.3` are not evidence of an
   identical build.
+- **Do not use `adb shell dumpsys gfxinfo` on this app.** It reports
+  `Total frames rendered: 0` — Flutter draws into its own SurfaceView and never
+  goes through HWUI. Use `SchedulerBinding.addTimingsCallback` or DevTools.
+- **`appLogger` output does not reach logcat in profile builds.** Only
+  `debugPrint` does. Any temporary profile-mode instrumentation must use
+  `debugPrint`.
+- **Do not re-test whether `DownloadManager.restore()` or `GoogleFonts` slow
+  down startup.** Both were ablated and measured: neither moves
+  `timeToFirstFrame`.
+- **Do not "optimize" the list/grid widgets for scroll performance.** Measured
+  at build p90 ≤ 2.4 ms and raster p90 ≤ 4.8 ms against an 8.3 ms budget, with
+  0–2 % janky frames. There is nothing there.
+- **Do not remove the `RepaintBoundary` around the carousel ring.** Without it
+  the per-frame build cost goes straight back from 1.2 ms to 3.2–3.6 ms.
 - **A chooser instead of the installer is a device quirk.** This device has
   `com.nh.aex/.InstallApk` (APKExtractor) registered for
   `ACTION_INSTALL_PACKAGE`, so Android shows `ResolverActivity` until a
@@ -1290,11 +1493,20 @@ defects found while running them are fixed and re-verified on device, and the
 published APKs turned out to be correctly versioned after all. Nothing in the
 update flow is known to be broken.
 
-**Next up: the performance audit** described in `D:\Android\Projects\prompt.txt`
-— baseline first (profile mode, real device), then bottlenecks, then only
-justified optimizations, each re-measured.
+**Find what keeps the home tab rendering at ~120 fps while idle.** This is the
+one measured performance question the audit could not answer. The carousel's
+ring animation was ruled out (disabling it left the frame count unchanged), so
+the next suspect is `carousel_slider`'s page view. Attach DevTools to a profile
+build, sit on the home tab, and read the timeline:
 
-**Also open: repeat the part-4 watch-position reproduction on a release build.**
+```bash
+flutter run --profile -d RZCX91W8YGP
+```
+
+Everything else the audit found is fixed and re-measured; see part 4 above for
+the numbers and for the items deliberately left alone.
+
+**Also open: repeat the watch-position reproduction on a release build.**
 Everything in part 4 was measured on `uz.mrlg.riyaplay.debug`. The release
 install on the test device is now `uz.mrlg.riyaplay`, versionCode 2004, last
 updated 2026-08-16 02:56 — whether that build contains the part-4

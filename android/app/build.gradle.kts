@@ -54,6 +54,19 @@ android {
         applicationIdSuffix = ".debug"
         versionNameSuffix = "-debug"
     }
+    // Profil build debug bilan bir xil paketga o'rnatiladi (`.debug`).
+    //
+    // Ikki sabab: release ilova (`uz.mrlg.riyaplay`) tegilmay qoladi — aks
+    // holda profil build uni almashtirib yuborardi va imzo mos kelmagani
+    // uchun INSTALL_FAILED_UPDATE_INCOMPATIBLE bilan tugardi; ikkinchidan,
+    // profil o'lchovlari uchun tizimga kirgan sessiya kerak, debug paketida
+    // esa u allaqachon bor. Imzo ham bir xil (debug kalit), shuning uchun
+    // ma'lumotlar saqlanib qoladi.
+    maybeCreate("profile").apply {
+        applicationIdSuffix = ".debug"
+        versionNameSuffix = "-profile"
+        signingConfig = signingConfigs.getByName("debug")
+    }
     getByName("release") {
         isMinifyEnabled = true
         isShrinkResources = true
