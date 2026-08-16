@@ -16,6 +16,8 @@ import 'package:flutter_iconly/flutter_iconly.dart';
 // ignore: depend_on_referenced_packages
 import 'package:flutter_native_splash/flutter_native_splash.dart';
 import 'package:riya_play/utils/app_logger.dart';
+import 'package:riya_play/utils/system_ui.dart';
+import 'package:riya_play/widgets/glass_bottom_bar.dart';
 
 /// Ekranlar qaysi biri ustiga qaysi biri qo'yilganini kuzatadi.
 ///
@@ -34,6 +36,9 @@ void main() async {
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
   ]);
+  // Tizim navigatsiya paneli yashiriladi — pastdagi shisha menyu ekran
+  // chetigacha chizilsin.
+  await AppSystemUi.apply();
   // Yuklashlar ro'yxati ekran ochilishidan oldin tiklanadi, aks holda
   // "Yuklab olishlar" bir zumga bo'sh ko'rinib qoladi. O'lchangan: 68–93 ms,
   // va uni kutmaslik birinchi kadr vaqtini o'zgartirmadi — shuning uchun
@@ -93,14 +98,6 @@ class _RiyaPlayAppState extends State<RiyaPlayApp> {
     if (!themeProvider.isInitialized) {
       return const Center(child: CircularProgressIndicator());
     }
-
-    SystemChrome.setSystemUIOverlayStyle(
-      const SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent,
-        statusBarIconBrightness: Brightness.light,
-        statusBarBrightness: Brightness.dark,
-      ),
-    );
 
     return MaterialApp(
       title: 'RiyaPlay',
@@ -211,6 +208,8 @@ class _MainScreenState extends State<MainScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
     if (state == AppLifecycleState.resumed && mounted) {
+      // Boshqa ilovadan qaytganda tizim panellarni qaytarib chiqaradi.
+      AppSystemUi.apply();
       setState(() {
         _selectedIndex = _tabController.index;
       });
@@ -231,6 +230,9 @@ class _MainScreenState extends State<MainScreen>
     final themeProvider = Provider.of<ThemeProvider>(context);
 
     return Scaffold(
+      // Shisha menyu ortida kontent bo'lishi kerak, aks holda
+      // `BackdropFilter` xiralashtiradigan narsa topmaydi.
+      extendBody: true,
       body: TabBarView(
         controller: _tabController,
         physics: const BouncingScrollPhysics(),
@@ -238,198 +240,206 @@ class _MainScreenState extends State<MainScreen>
             _screens.map((screen) => KeepAliveWrapper(child: screen)).toList(),
       ),
       bottomNavigationBar: SafeArea(
-        child: Container(
-          decoration: BoxDecoration(
-            color: themeProvider.cardColor,
-            boxShadow: [
-              BoxShadow(
-                color: themeProvider.shadowColor,
-                blurRadius: 8,
-                offset: const Offset(0, -2),
-              ),
-            ],
-          ),
-          child: Stack(
-            alignment: Alignment.topCenter,
-            children: [
-              BottomNavigationBar(
-                currentIndex: _selectedIndex,
-                onTap: _onItemTapped,
-                selectedItemColor: themeProvider.accentColor,
-                unselectedItemColor: themeProvider.subTextColor,
-                backgroundColor: Colors.transparent,
-                selectedLabelStyle: GoogleFonts.poppins(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                  color: themeProvider.accentColor,
-                ),
-                unselectedLabelStyle: GoogleFonts.poppins(
-                  fontSize: 12,
-                  color: themeProvider.subTextColor,
-                ),
-                type: BottomNavigationBarType.fixed,
-                elevation: 0,
-                items: [
-                  BottomNavigationBarItem(
-                    icon: AnimatedScale(
-                      scale: _selectedIndex == 0 ? 1.2 : 1.0,
-                      duration: const Duration(milliseconds: 200),
-                      curve: Curves.easeInOut,
-                      child: Icon(
-                        IconlyLight.home,
-                        color:
-                            _selectedIndex == 0
-                                ? themeProvider.accentColor
-                                : themeProvider.subTextColor,
+        top: false,
+        child: GlassBottomBar(
+          // Ko'rsatkichning o'rni panelning o'z kengligidan hisoblanadi:
+          // shisha panel chetlardan ichkariroq turadi, ekran kengligiga
+          // tayanilsa ko'rsatkich tugmalardan siljib qoladi.
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final barWidth = constraints.maxWidth;
+              return Stack(
+                alignment: Alignment.topCenter,
+                children: [
+                  // Yuqoridan bo'sh joy — ko'rsatkich chizig'i ikonkalar ustiga
+                  // tushib qolmasin.
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: BottomNavigationBar(
+                      currentIndex: _selectedIndex,
+                      onTap: _onItemTapped,
+                      selectedItemColor: themeProvider.accentColor,
+                      unselectedItemColor: themeProvider.subTextColor,
+                      backgroundColor: Colors.transparent,
+                      // Shisha panel ekran chetlaridan ichkariroq turadi, shuning
+                      // uchun yorliqlar 12 pt da eng chetdagisi kesilib qolardi.
+                      selectedFontSize: 11,
+                      unselectedFontSize: 11,
+                      selectedLabelStyle: GoogleFonts.poppins(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                        color: themeProvider.accentColor,
                       ),
-                    ),
-                    activeIcon: AnimatedScale(
-                      scale: _selectedIndex == 0 ? 1.2 : 1.0,
-                      duration: const Duration(milliseconds: 200),
-                      curve: Curves.easeInOut,
-                      child: Icon(
-                        IconlyBold.home,
-                        color:
-                            _selectedIndex == 0
-                                ? themeProvider.accentColor
-                                : themeProvider.subTextColor,
+                      unselectedLabelStyle: GoogleFonts.poppins(
+                        fontSize: 11,
+                        color: themeProvider.subTextColor,
                       ),
-                    ),
-                    label: 'Bosh sahifa',
-                  ),
-                  BottomNavigationBarItem(
-                    icon: AnimatedScale(
-                      scale: _selectedIndex == 1 ? 1.2 : 1.0,
-                      duration: const Duration(milliseconds: 200),
-                      curve: Curves.easeInOut,
-                      child: Icon(
-                        IconlyLight.video,
-                        color:
-                            _selectedIndex == 1
-                                ? themeProvider.accentColor
-                                : themeProvider.subTextColor,
-                      ),
-                    ),
-                    activeIcon: AnimatedScale(
-                      scale: _selectedIndex == 1 ? 1.2 : 1.0,
-                      duration: const Duration(milliseconds: 200),
-                      curve: Curves.easeInOut,
-                      child: Icon(
-                        IconlyBold.video,
-                        color:
-                            _selectedIndex == 1
-                                ? themeProvider.accentColor
-                                : themeProvider.subTextColor,
-                      ),
-                    ),
-                    label: 'TV',
-                  ),
-                  BottomNavigationBarItem(
-                    icon: AnimatedScale(
-                      scale: _selectedIndex == 2 ? 1.2 : 1.0,
-                      duration: const Duration(milliseconds: 200),
-                      curve: Curves.easeInOut,
-                      child: Icon(
-                        IconlyLight.category,
-                        color:
-                            _selectedIndex == 2
-                                ? themeProvider.accentColor
-                                : themeProvider.subTextColor,
-                      ),
-                    ),
-                    activeIcon: AnimatedScale(
-                      scale: _selectedIndex == 2 ? 1.2 : 1.0,
-                      duration: const Duration(milliseconds: 200),
-                      curve: Curves.easeInOut,
-                      child: Icon(
-                        IconlyBold.category,
-                        color:
-                            _selectedIndex == 2
-                                ? themeProvider.accentColor
-                                : themeProvider.subTextColor,
-                      ),
-                    ),
-                    label: 'Katalog',
-                  ),
-                  BottomNavigationBarItem(
-                    icon: AnimatedScale(
-                      scale: _selectedIndex == 3 ? 1.2 : 1.0,
-                      duration: const Duration(milliseconds: 200),
-                      curve: Curves.easeInOut,
-                      child: Icon(
-                        IconlyLight.heart,
-                        color:
-                            _selectedIndex == 3
-                                ? themeProvider.accentColor
-                                : themeProvider.subTextColor,
-                      ),
-                    ),
-                    activeIcon: AnimatedScale(
-                      scale: _selectedIndex == 3 ? 1.2 : 1.0,
-                      duration: const Duration(milliseconds: 200),
-                      curve: Curves.easeInOut,
-                      child: Icon(
-                        IconlyBold.heart,
-                        color:
-                            _selectedIndex == 3
-                                ? themeProvider.accentColor
-                                : themeProvider.subTextColor,
-                      ),
-                    ),
-                    label: 'Sevimlilar',
-                  ),
-                  BottomNavigationBarItem(
-                    icon: AnimatedScale(
-                      scale: _selectedIndex == 4 ? 1.2 : 1.0,
-                      duration: const Duration(milliseconds: 200),
-                      curve: Curves.easeInOut,
-                      child: Icon(
-                        IconlyLight.profile,
-                        color:
-                            _selectedIndex == 4
-                                ? themeProvider.accentColor
-                                : themeProvider.subTextColor,
-                      ),
-                    ),
-                    activeIcon: AnimatedScale(
-                      scale: _selectedIndex == 4 ? 1.2 : 1.0,
-                      duration: const Duration(milliseconds: 200),
-                      curve: Curves.easeInOut,
-                      child: Icon(
-                        IconlyBold.profile,
-                        color:
-                            _selectedIndex == 4
-                                ? themeProvider.accentColor
-                                : themeProvider.subTextColor,
-                      ),
-                    ),
-                    label: 'Profil',
-                  ),
-                ],
-              ),
-              AnimatedPositioned(
-                duration: const Duration(milliseconds: 300),
-                curve: Curves.easeInOut,
-                top: 0,
-                left:
-                    _selectedIndex * (MediaQuery.of(context).size.width / 5) +
-                    (MediaQuery.of(context).size.width / 10) -
-                    16,
-                child: Container(
-                  width: 32,
-                  height: 4,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [
-                        themeProvider.accentColor.withOpacity(0.7),
-                        themeProvider.accentColor,
+                      type: BottomNavigationBarType.fixed,
+                      elevation: 0,
+                      items: [
+                        BottomNavigationBarItem(
+                          icon: AnimatedScale(
+                            scale: _selectedIndex == 0 ? 1.2 : 1.0,
+                            duration: const Duration(milliseconds: 200),
+                            curve: Curves.easeInOut,
+                            child: Icon(
+                              IconlyLight.home,
+                              color:
+                                  _selectedIndex == 0
+                                      ? themeProvider.accentColor
+                                      : themeProvider.subTextColor,
+                            ),
+                          ),
+                          activeIcon: AnimatedScale(
+                            scale: _selectedIndex == 0 ? 1.2 : 1.0,
+                            duration: const Duration(milliseconds: 200),
+                            curve: Curves.easeInOut,
+                            child: Icon(
+                              IconlyBold.home,
+                              color:
+                                  _selectedIndex == 0
+                                      ? themeProvider.accentColor
+                                      : themeProvider.subTextColor,
+                            ),
+                          ),
+                          label: 'Bosh sahifa',
+                        ),
+                        BottomNavigationBarItem(
+                          icon: AnimatedScale(
+                            scale: _selectedIndex == 1 ? 1.2 : 1.0,
+                            duration: const Duration(milliseconds: 200),
+                            curve: Curves.easeInOut,
+                            child: Icon(
+                              IconlyLight.video,
+                              color:
+                                  _selectedIndex == 1
+                                      ? themeProvider.accentColor
+                                      : themeProvider.subTextColor,
+                            ),
+                          ),
+                          activeIcon: AnimatedScale(
+                            scale: _selectedIndex == 1 ? 1.2 : 1.0,
+                            duration: const Duration(milliseconds: 200),
+                            curve: Curves.easeInOut,
+                            child: Icon(
+                              IconlyBold.video,
+                              color:
+                                  _selectedIndex == 1
+                                      ? themeProvider.accentColor
+                                      : themeProvider.subTextColor,
+                            ),
+                          ),
+                          label: 'TV',
+                        ),
+                        BottomNavigationBarItem(
+                          icon: AnimatedScale(
+                            scale: _selectedIndex == 2 ? 1.2 : 1.0,
+                            duration: const Duration(milliseconds: 200),
+                            curve: Curves.easeInOut,
+                            child: Icon(
+                              IconlyLight.category,
+                              color:
+                                  _selectedIndex == 2
+                                      ? themeProvider.accentColor
+                                      : themeProvider.subTextColor,
+                            ),
+                          ),
+                          activeIcon: AnimatedScale(
+                            scale: _selectedIndex == 2 ? 1.2 : 1.0,
+                            duration: const Duration(milliseconds: 200),
+                            curve: Curves.easeInOut,
+                            child: Icon(
+                              IconlyBold.category,
+                              color:
+                                  _selectedIndex == 2
+                                      ? themeProvider.accentColor
+                                      : themeProvider.subTextColor,
+                            ),
+                          ),
+                          label: 'Katalog',
+                        ),
+                        BottomNavigationBarItem(
+                          icon: AnimatedScale(
+                            scale: _selectedIndex == 3 ? 1.2 : 1.0,
+                            duration: const Duration(milliseconds: 200),
+                            curve: Curves.easeInOut,
+                            child: Icon(
+                              IconlyLight.heart,
+                              color:
+                                  _selectedIndex == 3
+                                      ? themeProvider.accentColor
+                                      : themeProvider.subTextColor,
+                            ),
+                          ),
+                          activeIcon: AnimatedScale(
+                            scale: _selectedIndex == 3 ? 1.2 : 1.0,
+                            duration: const Duration(milliseconds: 200),
+                            curve: Curves.easeInOut,
+                            child: Icon(
+                              IconlyBold.heart,
+                              color:
+                                  _selectedIndex == 3
+                                      ? themeProvider.accentColor
+                                      : themeProvider.subTextColor,
+                            ),
+                          ),
+                          label: 'Sevimlilar',
+                        ),
+                        BottomNavigationBarItem(
+                          icon: AnimatedScale(
+                            scale: _selectedIndex == 4 ? 1.2 : 1.0,
+                            duration: const Duration(milliseconds: 200),
+                            curve: Curves.easeInOut,
+                            child: Icon(
+                              IconlyLight.profile,
+                              color:
+                                  _selectedIndex == 4
+                                      ? themeProvider.accentColor
+                                      : themeProvider.subTextColor,
+                            ),
+                          ),
+                          activeIcon: AnimatedScale(
+                            scale: _selectedIndex == 4 ? 1.2 : 1.0,
+                            duration: const Duration(milliseconds: 200),
+                            curve: Curves.easeInOut,
+                            child: Icon(
+                              IconlyBold.profile,
+                              color:
+                                  _selectedIndex == 4
+                                      ? themeProvider.accentColor
+                                      : themeProvider.subTextColor,
+                            ),
+                          ),
+                          label: 'Profil',
+                        ),
                       ],
                     ),
-                    borderRadius: BorderRadius.circular(8),
                   ),
-                ),
-              ),
-            ],
+                  AnimatedPositioned(
+                    duration: const Duration(milliseconds: 300),
+                    curve: Curves.easeInOut,
+                    // Yumaloq chetdan pastroq, aks holda ko'rsatkich
+                    // burchakda kesilib qoladi.
+                    top: 4,
+                    left:
+                        _selectedIndex * (barWidth / 5) + (barWidth / 10) - 16,
+                    child: Container(
+                      width: 32,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          colors: [
+                            themeProvider.accentColor.withOpacity(0.7),
+                            themeProvider.accentColor,
+                          ],
+                        ),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                    ),
+                  ),
+                ],
+              );
+            },
           ),
         ),
       ),

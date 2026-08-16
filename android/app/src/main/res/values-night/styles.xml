@@ -23,6 +23,10 @@
              zonasini o'zi egallab, ustiga qora fon chizadi. -->
         <item name="android:windowDrawsSystemBarBackgrounds">true</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
+        <!-- Navigatsiya paneli ham shaffof: ilova o'z shisha menyusini ekran
+             chetigacha chizadi. -->
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowTranslucentNavigation">false</item>
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
     </style>
 </resources>

@@ -121,6 +121,65 @@ both being 47,297,998 bytes. The device's release install agrees
 "Republish with a correctly versioned APK" item is therefore **closed**, and
 the earlier note that both releases report `1.0.1 / 2002` was wrong.
 
+### Session of 2026-08-16, part 5 — glass bottom bar and a hidden navigation bar
+
+Two requests: make the bottom menu look like "liquid glass", and make the
+Android navigation bar transparent and hidden, summoned when needed.
+
+**Apple's Liquid Glass material does not exist on Android**, so the effect is
+assembled by hand in `lib/widgets/glass_bottom_bar.dart`: a floating rounded
+panel with a translucent white gradient, a bright hairline border, and an
+optional real `BackdropFilter` blur. `Scaffold(extendBody: true)` is required
+— without content behind it there is nothing to show through and the panel
+collapses into a flat colour.
+
+**The real blur is implemented but switched off**, by measurement, with the
+user's agreement. On the SM-A556E at 120 Hz, sitting idle on the home tab:
+
+| Variant | raster p50 | raster p90 | janky frames / 3 s |
+| --- | --- | --- | --- |
+| no `BackdropFilter` | 3.6–4.3 ms | 4.7–6.3 ms | **0** |
+| `BackdropFilter` σ=18 | 6.5–8.2 ms | 8.3–8.8 ms | 4–29 |
+| `BackdropFilter` σ=10 | 8.4–8.6 ms | 8.9–9.1 ms | 47–59 |
+
+The 120 Hz budget is 8.3 ms. Lowering the sigma did **not** help — the cost is
+`BackdropFilter` itself re-reading the backdrop every frame, not the blur
+radius. It compounds with the unresolved "home tab redraws at ~120 fps while
+idle" finding from part 4: the blur is paid ~120 times a second for a screen
+that is not changing. During scrolling the blur is fine (0–6 janky frames).
+
+So `GlassBottomBar.blur` defaults to `false` and carries the table above in
+its doc comment. **Fix the idle redraw first, then flip it to `true`** — the
+two are the same problem.
+
+**System navigation bar.** `lib/utils/system_ui.dart` is now the single place
+that touches `SystemChrome`:
+
+- `AppSystemUi.apply()` — `SystemUiMode.manual` with only
+  `SystemUiOverlay.top`, i.e. the status bar stays (the home and film screens
+  are designed to draw under it) and the navigation bar is hidden.
+- A `setSystemUIChangeCallback` re-hides the bar 3 s after the user swipes it
+  into view, so it stays summonable without becoming permanent. Verified on
+  device: swipe up reveals the three-button bar and the glass menu slides
+  above it; 5 s later both are back to the hidden state.
+- `AppSystemUi.applyFullscreen()` — `immersiveSticky`, for the player.
+- `VideoPlayerScreen.dispose()` now restores through `AppSystemUi.apply()`.
+  It previously restored `SystemUiOverlay.values`, which would have brought
+  the navigation bar back permanently after every playback.
+- All four `styles.xml` variants gained a transparent `navigationBarColor`.
+  `systemNavigationBarContrastEnforced: false` is set in the overlay style —
+  without it Android 10+ paints its own scrim behind a transparent bar.
+
+**Verified on device**: menu renders and switches tabs, the indicator tracks
+the selected tab, swipe-to-reveal and auto-re-hide both work, playback resumes
+and the position still saves (01:53 → 02:23, card moves to the front), and the
+navigation bar stays hidden after leaving the player.
+
+**Watch out**: `extendBody: true` means content now scrolls *under* the menu.
+The Profile list and the catalog grid were checked and both still reach their
+last item, but any screen with a finite scrollable and no bottom padding could
+hide its last row behind the glass.
+
 ### Session of 2026-08-16, part 4 — performance audit
 
 Audit date: **2026-08-16**. Everything below was measured on a real device in
@@ -1355,6 +1414,8 @@ Modified:
 
 New:
 
+- `lib/utils/system_ui.dart` — `AppSystemUi`: the only place that changes system-bar mode.
+- `lib/widgets/glass_bottom_bar.dart` — the glass panel behind the bottom menu; `blur` off by measurement.
 - `lib/services/download_manager.dart` — the download queue.
 - `lib/services/error_handler.dart` — `ApiErrorHandler`.
 - `lib/services/cache_service.dart` — short-lived home cache.
@@ -1479,6 +1540,17 @@ New:
   0–2 % janky frames. There is nothing there.
 - **Do not remove the `RepaintBoundary` around the carousel ring.** Without it
   the per-frame build cost goes straight back from 1.2 ms to 3.2–3.6 ms.
+- **Do not turn on `GlassBottomBar.blur` "to see if it is fast enough".** It
+  was measured at two sigmas; both blow the 120 Hz budget on the home tab. The
+  numbers are in the widget's doc comment. Re-measure only after the idle
+  redraw is fixed.
+- **Do not lower `blurSigma` hoping to make the blur cheap.** σ=10 measured
+  *worse* than σ=18. The cost is the backdrop read, not the radius.
+- **Do not call `SystemChrome.setEnabledSystemUIMode` from a screen.** Go
+  through `AppSystemUi`; the player and the shell used to fight over the
+  system bars, which is what `lib/utils/system_ui.dart` exists to prevent.
+- **Do not restore `SystemUiOverlay.values` in the player's `dispose`.** That
+  brings the Android navigation bar back permanently on top of the glass menu.
 - **A chooser instead of the installer is a device quirk.** This device has
   `com.nh.aex/.InstallApk` (APKExtractor) registered for
   `ACTION_INSTALL_PACKAGE`, so Android shows `ResolverActivity` until a
@@ -1494,7 +1566,9 @@ published APKs turned out to be correctly versioned after all. Nothing in the
 update flow is known to be broken.
 
 **Find what keeps the home tab rendering at ~120 fps while idle.** This is the
-one measured performance question the audit could not answer. The carousel's
+one measured performance question the audit could not answer — and it now
+blocks a product decision too: the glass menu's real blur is switched off
+because of it (part 5). The carousel's
 ring animation was ruled out (disabling it left the frame count unchanged), so
 the next suspect is `carousel_slider`'s page view. Attach DevTools to a profile
 build, sit on the home tab, and read the timeline:

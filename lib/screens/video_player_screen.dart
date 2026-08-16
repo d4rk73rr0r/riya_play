@@ -5,6 +5,7 @@ import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:http/http.dart' as http;
 import 'package:riya_play/utils/video_helpers.dart'; // Yordamchi funksiyalarni import qilish
 import 'package:riya_play/utils/app_logger.dart';
+import 'package:riya_play/utils/system_ui.dart';
 import 'package:riya_play/services/api_service.dart';
 
 class VideoPlayerScreen extends StatefulWidget {
@@ -459,10 +460,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
       // Pleer ochilishidan oldingi holatga qaytarish — edgeToEdge'da qolib
       // ketsa, qolgan ekranlar (masalan FilmScreen) MediaQuery.size'ni
       // butun ekran balandligi deb hisoblab, joylashuvni pastga suradi.
-      SystemChrome.setEnabledSystemUIMode(
-        SystemUiMode.manual,
-        overlays: SystemUiOverlay.values,
-      );
+      //
+      // Ilovaning odatiy holati `AppSystemUi.apply()` da: tizim navigatsiya
+      // paneli yashirin. Bu yerda `SystemUiOverlay.values` qo'yilsa, pleerdan
+      // chiqqanda panel qaytib chiqib, shisha menyu ustiga tushardi.
+      AppSystemUi.apply();
       SystemChrome.setPreferredOrientations([
         DeviceOrientation.portraitUp,
         DeviceOrientation.portraitDown,
