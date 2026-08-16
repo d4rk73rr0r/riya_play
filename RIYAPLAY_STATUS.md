@@ -63,6 +63,70 @@ The session covered four areas, in order:
    wrong progress denominator, wrong sort order; plus the cards now start
    playback directly instead of opening the film page.
 
+### Session of 2026-08-16, part 2 — the install-permission flow, end to end
+
+The four install-flow scenarios that the previous session left unfinished were
+run on the physical device against a debug build that actually contains the
+part-1 fixes. The debug APK that was on the device (built 02:45) predated
+commit `c700676` (11:26), so it was rebuilt and reinstalled first — measuring
+the old package would have proved nothing.
+
+| # | Scenario | Result |
+| --- | --- | --- |
+| 1a | `appops … deny` → "Yangilanishni tekshirish" → "Yangilash" | **PASS.** No download starts. The dialog explains the missing permission and the primary button becomes "Ruxsat berish" |
+| 1b | "Ruxsat berish" | **PASS.** `com.android.settings/.Settings$ManageAppExternalSourcesActivity` opens for this package |
+| 2 | Return from Settings **without** enabling | **PASS.** Red message "Ruxsat hali berilmagan…", button still "Ruxsat berish", no crash, no download |
+| 1c | Enable the switch, then Back | **PASS.** `didChangeAppLifecycleState` re-checks, the download starts by itself (observed at 68 %), and the installer intent is fired at 100 % |
+| 3 | `appops … allow` from the start → "Yangilash" | **PASS.** Download, then `com.google.android.packageinstaller/…PackageInstallerActivity` on top with "Обновить приложение?" — no detour |
+| 4 | Restore the switch | Left at **`allow`**, which is what it was at the start of the session (it was `allow` before test 1a set it to `deny`). Not reset to `default` |
+
+The install intent itself is fine. On the first run the system showed
+`com.android.internal.app.ResolverActivity` instead of the installer, because
+this device has a second handler for `ACTION_INSTALL_PACKAGE`
+(`com.nh.aex/.InstallApk`, "APKExtractor"). That is a device-local chooser, not
+an app defect; on the next run the installer opened directly.
+
+**Two real defects surfaced while running the tests, both now fixed** (commit
+`d82a8f5`):
+
+1. **The dialog could not be dismissed after cancelling the installer.**
+   `ota_update` emits `INSTALLING` when the installer intent is fired and then
+   emits **nothing at all** — a user who taps "Отмена" produces no event. The
+   dialog therefore kept `_isWorking == true` forever, which meant `PopScope`
+   refused Back **and** both action buttons were hidden by
+   `if (!_isWorking)`. Tapping outside does nothing either
+   (`barrierDismissible: false`). The only escape was force-stopping the app.
+   Verified stuck on device, then verified fixed: `INSTALLING` now clears
+   `_isWorking`, sets `_installerLaunched`, and renders a single "Yopish"
+   button; Back works again. A retry button is deliberately **not** offered —
+   it would re-download 45 MB for an APK already on disk.
+2. **Release notes rendered their own markup.** The dialog showed
+   `<p>OTA yuklanish rate-limit fix qilindi.</p>`, tags included. Two separate
+   causes: the API path passed `data['body']` through verbatim, and the atom
+   path stripped tags *before* unescaping, so `&lt;p&gt;` turned into a visible
+   `<p>` afterwards. Both now share `_plainText`, which unescapes first and
+   strips afterwards. Verified clean on device.
+
+**A stale claim in this document was disproved.** The published `v1.0.3`
+arm64 asset was downloaded and inspected directly:
+
+```
+aapt dump badging app-arm64-v8a-release.apk
+package: name='uz.mrlg.riyaplay' versionCode='2004' versionName='1.0.3'
+```
+
+So the release APK **is** correctly versioned, despite `v1.0.2` and `v1.0.3`
+both being 47,297,998 bytes. The device's release install agrees
+(`versionName=1.0.3, versionCode=2004`, updated 2026-08-16 02:56). The
+"Republish with a correctly versioned APK" item is therefore **closed**, and
+the earlier note that both releases report `1.0.1 / 2002` was wrong.
+
+Note that `pubspec.yaml` is still `version: 1.0.1+2` and
+`android/local.properties` still carries `flutter.versionName=1.0.1` /
+`flutter.versionCode=2` (both rewritten by the last **debug** build), so the
+2004 build number did not come from the tracked tree. Whatever produced it is
+outside version control — worth pinning down before the next release.
+
 ### Session of 2026-08-16 — the app died at 100% instead of installing
 
 Reported: the update downloads to 100 %, then the app closes and nothing is
@@ -130,9 +194,10 @@ repository, **`d4rk73rr0r/rplay-releases`**.
   `flutter.versionName` / `flutter.versionCode` in
   `android/app/build.gradle.kts`. Debug builds add `versionNameSuffix =
   "-debug"`, so `PackageInfo.version` can read `1.0.1-debug` — the parser has
-  to tolerate that. The release install on the test device reports
-  `versionName=1.0.1, versionCode=2002`, i.e. release APKs are built with a
-  custom build number.
+  to tolerate that. The release install on the test device reported
+  `versionName=1.0.1, versionCode=2002` **at the time**, i.e. release APKs are
+  built with a custom build number. (As of 2026-08-16 it reports
+  `1.0.3 / 2004`; see the 2026-08-16 part 2 section.)
 - **Permissions**: the `ota_update` plugin already declares
   `REQUEST_INSTALL_PACKAGES` and ships its own `FileProvider`
   (`<applicationId>.ota_update_provider`), so no provider wiring is needed in
@@ -874,10 +939,12 @@ was **stopped before a raw single-stream baseline was captured**.
 - **OTA, not executed against the real repository**: it has no releases yet,
   so the genuine "update available → download → install" path for a RiyaPlay
   APK has never run. A publish-and-retest is the first remaining-work item.
-- **OTA, install confirmation dialog**: the system installer received the APK
-  but nothing could be installed (the test APK's exact version was already on
-  the device), so "user accepts the install" and "user cancels the install"
-  were not separately observed.
+- **OTA, install confirmation dialog**: "user cancels the install" **was**
+  observed on 2026-08-16 (part 2) and produced the stuck-dialog bug, now
+  fixed. "User accepts the install" was observed on 2026-08-15
+  (`PackageInstallerSession: Session installed`) but **not** re-run after the
+  part-2 changes — the accept path only closes the app's own dialog by
+  replacing the process, so nothing in the fix touches it.
 - **OTA, corrupted download**: no checksum is passed today, so
   `CHECKSUM_ERROR` cannot occur; the branch exists but is unreachable.
 
@@ -936,7 +1003,9 @@ verified on device.)
 | ~~Set the real OTA repository~~ | Placeholder repo name from the port | `lib/services/update_service.dart` | Medium | **DONE (2026-08-15)** | Now `d4rk73rr0r/rplay-releases`, with manual check, error messages and version comparison |
 | ~~Publish the first release and re-test~~ | — | — | High | **DONE (2026-08-15)** | `v1.0.2` published with three split APKs; a `1.0.1-debug` device was offered the 45 MB arm64 asset |
 | ~~Finish the download+install test against the real release~~ | — | — | Medium | **DONE (2026-08-15)** | `v1.0.3` downloaded and installed through the app; `PackageInstallerSession: Session installed` |
-| **Republish with a correctly versioned APK** | `v1.0.2` and `v1.0.3` are the same file and both report `versionName=1.0.1, versionCode=2002`, so an updated device still looks outdated | `pubspec.yaml`, `android/local.properties` | High | Not started | Delete the `flutter.versionName` / `flutter.versionCode` lines from `android/local.properties`, set `version:` in `pubspec.yaml`, rebuild with `--split-per-abi`, confirm the version with `dumpsys package`, then upload |
+| ~~Republish with a correctly versioned APK~~ | — | — | High | **DONE / claim was wrong (2026-08-16)** | `aapt dump badging` on the published `v1.0.3` arm64 asset reports `versionCode=2004 versionName=1.0.3`; the device install agrees. Nothing to republish |
+| **Find out where `versionCode=2004` comes from** | The tracked tree says `1.0.1+2`; `android/local.properties` is regenerated by every build, so the release build number lives outside version control | `pubspec.yaml`, `android/local.properties` | Medium | Not started | Before the next release, set `version:` in `pubspec.yaml` explicitly, build with `--split-per-abi` and confirm with `aapt dump badging` that the APK carries it |
+| **Run the install-flow tests on a release build** | Every part-2 result was measured on `uz.mrlg.riyaplay.debug` | — | Medium | Not started | Same four scenarios against `uz.mrlg.riyaplay` once a newer release exists to offer |
 | ~~Decide the release asset naming~~ | — | `lib/services/update_service.dart` | Medium | **Settled** | `app-<abi>-release.apk`, the default `flutter build apk --split-per-abi` output. The atom fallback now depends on this name — renaming assets breaks it, so keep it |
 | Consider a checksum | `ota_update` supports `sha256checksum`, which would catch a truncated or tampered download | `lib/services/update_service.dart` | Low | Not started | Publish the APK's SHA-256 in the release body or as a second asset and pass it to `execute` |
 | ~~Re-check 5-qism duration~~ | Possible missing tail content | — | Low | **DONE** | Clean re-download is exactly 47:01 and decodes without errors |
@@ -1069,7 +1138,7 @@ New:
 - `lib/services/download_manager.dart` — the download queue.
 - `lib/services/error_handler.dart` — `ApiErrorHandler`.
 - `lib/services/cache_service.dart` — short-lived home cache.
-- `lib/services/update_service.dart` — GitHub OTA; rewritten 2026-08-15 against `d4rk73rr0r/rplay-releases` (manual check, `AppVersion` comparison, user-visible errors).
+- `lib/services/update_service.dart` — GitHub OTA; rewritten 2026-08-15 against `d4rk73rr0r/rplay-releases` (manual check, `AppVersion` comparison, user-visible errors); 2026-08-16: install-permission gating, and (part 2) `_installerLaunched` + shared `_plainText`.
 - `lib/screens/actor_films_screen.dart` — films by actor.
 - `lib/utils/latest_viewed.dart` — latest-viewed payload helpers.
 - `lib/utils/video_launcher.dart` — resume-aware player launcher.
@@ -1158,49 +1227,54 @@ New:
   flow** (they *generate* the QR). `riya_play` is the phone side and already
   scans via `mobile_scanner` + `checkQR`. They are complementary, not
   duplicates.
+- **Do not re-run the four install-permission scenarios on a debug build.**
+  All four passed on 2026-08-16 (part 2); only the release-build repeat is
+  still open.
+- **Do not assume `ota_update` reports a cancelled installation.** After
+  `INSTALLING` the stream is silent forever, whatever the user does in the
+  system installer. Any UI state entered at `INSTALLING` must be able to exit
+  on its own — this is exactly what produced the undismissable dialog.
+- **Do not "restore" `if (!_isWorking)` on both dialog actions.** That guard
+  is what hid every button after the installer opened.
+- **Do not strip HTML tags before unescaping entities** in the release notes.
+  The atom feed delivers them as `&lt;p&gt;`, so stripping first leaves
+  visible tags behind. `_plainText` unescapes first on purpose.
+- **Do not claim the published releases are mis-versioned.** Verified with
+  `aapt dump badging`: `v1.0.3` arm64 is `versionCode=2004 versionName=1.0.3`.
+  Equal asset sizes between `v1.0.2` and `v1.0.3` are not evidence of an
+  identical build.
+- **A chooser instead of the installer is a device quirk.** This device has
+  `com.nh.aex/.InstallApk` (APKExtractor) registered for
+  `ACTION_INSTALL_PACKAGE`, so Android shows `ResolverActivity` until a
+  default is picked. Nothing to fix in the app.
 
 ---
 
 ## Next Recommended Step
 
-**Finish the install-flow tests that the disconnect cut short**, on the same
-device and with the same `appops` trick:
+**The OTA chain is finished.** All four install-permission scenarios pass, both
+defects found while running them are fixed and re-verified on device, and the
+published APKs turned out to be correctly versioned after all. Nothing in the
+update flow is known to be broken.
 
-1. `adb shell appops set uz.mrlg.riyaplay.debug REQUEST_INSTALL_PACKAGES deny`
-   → "Yangilash" → "Ruxsat berish" → enable the switch → come back → the
-   download must start by itself and the installer must open.
-2. Return from Settings **without** enabling → expect a message and a working
-   "Ruxsat berish" button, no crash.
-3. `… REQUEST_INSTALL_PACKAGES allow` → "Yangilash" → download and installer
-   with no detour.
-4. Restore the switch: `… REQUEST_INSTALL_PACKAGES default`.
-
-**Then: republish with an APK whose own version actually changed.** The whole OTA
-chain is now proven end to end, but `v1.0.2` and `v1.0.3` are byte-identical
-files reporting `versionName=1.0.1, versionCode=2002`, so a device that
-installs "1.0.3" still calls itself 1.0.1 and would be offered the same update
-forever (the new `ota_installed_tag` guard hides the nag, it does not fix the
-package). Order of operations:
+**First, resolve the working-tree change that is not this session's.**
+`lib/services/download_service.dart` carries an uncommitted
+`_maxSegmentConcurrency = 48` (it was 24). This contradicts the measurement
+recorded under "Do Not Repeat": 48 measured worse per connection and coincided
+with an app restart, while 24 was re-verified stable at 9.11 MB/s effective
+over 448 MB. Either revert it or re-measure before committing — do not ship it
+untested.
 
 ```
-sed -i '/flutter.versionName=/d;/flutter.versionCode=/d' android/local.properties
+git diff lib/services/download_service.dart
 ```
 
-then set `version:` in `pubspec.yaml` (e.g. `1.0.4+4`), build, and verify the
-APK really carries it before uploading:
-
-```
-flutter build apk --release --split-per-abi
-adb install -r build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
-adb shell dumpsys package uz.mrlg.riyaplay | grep -E "versionName|versionCode"
-```
-
-**Also still open: repeat the part-4 watch-position reproduction on a release
-build.**
-Everything in part 4 was measured on `uz.mrlg.riyaplay.debug`; the release
-install on the test device (`uz.mrlg.riyaplay`, versionCode 2002, last updated
-2026-08-13 18:21) still carries the leaking `safeDispose`, so the reporter will
-keep seeing both the crash and the `00:00` card until it is rebuilt:
+**Then: repeat the part-4 watch-position reproduction on a release build.**
+Everything in part 4 was measured on `uz.mrlg.riyaplay.debug`. The release
+install on the test device is now `uz.mrlg.riyaplay`, versionCode 2004, last
+updated 2026-08-16 02:56 — whether that build contains the part-4
+`safeDispose` fix has **not** been established, so rebuild from the current
+tree rather than trusting it:
 
 ```
 flutter build apk --release
@@ -1212,8 +1286,9 @@ during playback and one on exit, and `second.time` on the server), followed by
 four play → Back cycles while watching `dumpsys meminfo` (expect a bounded
 Java heap, no OOM).
 
-The remaining open items are all Medium/Low and independent: the release asset
-naming convention, an optional SHA-256 for the download, the unexercised
+The remaining open items are all Medium/Low and independent: where
+`versionCode=2004` actually comes from, the install-flow repeat on a release
+build, an optional SHA-256 for the download, the unexercised
 `getFirstEpisode` fallback, the debug-only actor-poster rendering, wiring
 `ApiErrorHandler` into the screens that still interpolate raw `$e`, TV-channel
 playback after the disposal change, and the `tplaytv` backport (periodic sync
