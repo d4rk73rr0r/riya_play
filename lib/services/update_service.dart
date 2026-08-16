@@ -257,7 +257,7 @@ class UpdateService {
       UpdateInfo(
         version: latest.toString(),
         tagName: tag,
-        notes: (data['body'] as String? ?? '').trim(),
+        notes: _plainText(data['body'] as String? ?? ''),
         apkUrl: apk.url,
         apkBytes: apk.size,
       ),
@@ -362,14 +362,28 @@ class UpdateService {
           r'<content[^>]*>([\s\S]*?)</content>',
         ).firstMatch(body)?.group(1) ??
         '';
-    final unescaped = content
-        .replaceAll(RegExp(r'<[^>]+>'), '')
+    return _plainText(content);
+  }
+
+  /// Reliz izohidan HTML teglarini olib tashlaydi.
+  ///
+  /// GitHub API `body` maydonini qanday yozilgan bo'lsa shunday qaytaradi —
+  /// reliz izohiga `<p>...</p>` yozilsa, teglar dialogda ko'rinib qolardi.
+  ///
+  /// Avval HTML belgilari ochiladi, keyin teglar olib tashlanadi. Tartib
+  /// muhim: atom lentasida teglar `&lt;p&gt;` ko'rinishida keladi, shuning
+  /// uchun teskari tartibda ular ochilib, ekranda ko'rinib qolardi.
+  static String _plainText(String raw) {
+    final unescaped = raw
         .replaceAll('&lt;', '<')
         .replaceAll('&gt;', '>')
         .replaceAll('&quot;', '"')
         .replaceAll('&#39;', "'")
         .replaceAll('&amp;', '&');
-    return unescaped.trim();
+    return unescaped
+        .replaceAll(RegExp(r'<[^>]+>'), '')
+        .replaceAll(RegExp(r'\n{3,}'), '\n\n')
+        .trim();
   }
 
   /// Ishga tushishdagi tekshiruv oralig'i o'tdimi.
@@ -634,6 +648,11 @@ class _UpdateDialogState extends State<_UpdateDialog>
   /// O'rnatish ruxsati yo'q — tugma "Ruxsat berish"ga aylanadi.
   bool _needsPermission = false;
 
+  /// Tizim o'rnatgichi ochildi. `ota_update` bu nuqtadan keyin hech qanday
+  /// hodisa yubormaydi: foydalanuvchi "Отмена" bossa ham stream jim qoladi.
+  /// Shu sababli dialog o'zi yopiladigan holatga o'tishi kerak.
+  bool _installerLaunched = false;
+
   @override
   void initState() {
     super.initState();
@@ -746,6 +765,8 @@ class _UpdateDialogState extends State<_UpdateDialog>
         UpdateService._rememberInstalledTag(widget.info.tagName);
         setState(() {
           _progress = 1;
+          _isWorking = false;
+          _installerLaunched = true;
           _status = 'O‘rnatish oynasi ochildi';
         });
       case OtaStatus.INSTALLATION_DONE:
@@ -847,7 +868,14 @@ class _UpdateDialogState extends State<_UpdateDialog>
           ],
         ),
         actions: [
-          if (!_isWorking)
+          // O'rnatgich ochilgach yagona mantiqiy amal — dialogni yopish.
+          // Qayta yuklab olish 45 MB trafikni behuda sarflaydi.
+          if (_installerLaunched)
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Yopish'),
+            ),
+          if (!_isWorking && !_installerLaunched)
             TextButton(
               onPressed: () {
                 UpdateService._declinedThisSession = true;
@@ -855,7 +883,7 @@ class _UpdateDialogState extends State<_UpdateDialog>
               },
               child: const Text('Keyinroq'),
             ),
-          if (!_isWorking)
+          if (!_isWorking && !_installerLaunched)
             ElevatedButton(
               style: ElevatedButton.styleFrom(
                 backgroundColor: themeProvider.accentColor,
