@@ -67,6 +67,26 @@
             android:name=".DownloadService"
             android:exported="false"
             android:foregroundServiceType="dataSync"/>
+        <!-- Yangilanish APK'sini tizim o'rnatuvchisiga uzatish uchun.
+             `ota_update` plagini providerni o'zi e'lon qilmaydi — uni ilova
+             e'lon qilishi shart, aks holda `FileProvider.getUriForFile`
+             istisno tashlab, yuklab olish tugagan zahoti ilova yopiladi. -->
+        <provider
+            android:name="sk.fourq.otaupdate.OtaUpdateFileProvider"
+            android:authorities="${applicationId}.ota_update_provider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/ota_update_file_paths"/>
+        </provider>
+        <receiver
+            android:name="sk.fourq.otaupdate.InstallResultReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="${applicationId}.ACTION_INSTALL_COMPLETE"/>
+            </intent-filter>
+        </receiver>
         <meta-data
             android:name="flutterEmbedding"
             android:value="2"/>

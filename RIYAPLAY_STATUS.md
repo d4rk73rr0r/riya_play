@@ -63,6 +63,54 @@ The session covered four areas, in order:
    wrong progress denominator, wrong sort order; plus the cards now start
    playback directly instead of opening the film page.
 
+### Session of 2026-08-16 — the app died at 100% instead of installing
+
+Reported: the update downloads to 100 %, then the app closes and nothing is
+installed. Investigated before changing anything.
+
+**The download itself is fine.** The plugin writes to
+`/data/data/<applicationId>/files/ota_update/riyaplay_update.apk`; on the
+device that file was **47,297,998 bytes**, byte-for-byte the size the GitHub
+asset reports. Nothing is wrong with the transfer or the file.
+
+**What runs at 100 %.** `OtaUpdatePlugin.onDownloadComplete()` →
+`executeInstallation()`. The app is not a system app, so
+`hasInstallPackagesPermission()` (which checks the privileged
+`INSTALL_PACKAGES`) is false, and `usePackageInstaller` was not set, so it
+takes `installUsingActionInstallPackage()`:
+
+```java
+Uri apkUri = FileProvider.getUriForFile(context, androidProviderAuthority, downloadedFile);
+intent = new Intent(Intent.ACTION_INSTALL_PACKAGE);
+```
+
+`androidProviderAuthority` defaults to `<applicationId>.ota_update_provider`.
+
+**Root cause.** `ota_update` does **not** declare that provider in its own
+manifest — its README asks the host app to declare it, and this app never
+did. `FileProvider.getUriForFile` therefore throws
+`IllegalArgumentException` on the main thread inside a `handler.post`
+lambda, nothing catches it, and an uncaught Java exception crossing JNI kills
+the Flutter process — the same
+`[FATAL:…platform_view_android_jni_impl.cc(1485)] Check failed:
+fml::jni::CheckException(env).` signature already present in the device's
+crash records. That is the "app closes at 100 %".
+
+**Second, independent gap.** The plugin never checks
+`PackageManager.canRequestPackageInstalls()`. `REQUEST_INSTALL_PACKAGES` in
+the manifest is only half of it: since API 26 the user must additionally
+allow "Install unknown apps" for this specific app. Nothing asked for it and
+nothing reacted to it being off.
+
+**Fix.** Declare what the plugin needs (`OtaUpdateFileProvider` with
+`@xml/ota_update_file_paths`, plus `InstallResultReceiver`), and gate the
+download behind the install permission: check it **before** downloading —
+spending 45 MB of mobile data only to fail at the end is worse — send the
+user to `Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES` for this package, re-check
+on resume via `WidgetsBindingObserver`, and continue automatically once it is
+granted. The APK is deleted on a later start, never while the installer may
+still be reading it.
+
 ### Session of 2026-08-15 — OTA updates from GitHub Releases
 
 The app ships outside Google Play, so it has to update itself. An
@@ -533,6 +581,15 @@ Debug APK builds and installs successfully. Device used for testing:
 | `lib/screens/index_screen.dart` | `IndexScreenProvider.latestViewedFields` (shared constant) and `reloadLatestViewed()`; the card awaits the player, then reloads | Bug 15 | Yes — device |
 | `lib/screens/latestviewed_screen.dart` | `LatestViewedCard.onReturn` wired to the screen's `_refresh` (superseded in part 3 by `RouteAware`) | Bug 15 | Yes — device |
 
+### OTA install flow (2026-08-16)
+
+| File | Change | Why | Tested |
+| --- | --- | --- | --- |
+| `android/app/src/main/AndroidManifest.xml` | `<provider sk.fourq.otaupdate.OtaUpdateFileProvider>` with authority `${applicationId}.ota_update_provider`, and `<receiver sk.fourq.otaupdate.InstallResultReceiver>` | Without the provider `FileProvider.getUriForFile` throws and the app dies at 100 % | Yes — device, no crash after the change |
+| `android/app/src/main/res/xml/ota_update_file_paths.xml` (**new**) | `<files-path name="internal_apk_storage" path="ota_update/"/>` | The exact directory the plugin downloads into | Yes |
+| `android/app/.../MainActivity.kt` | `canInstallPackages` (via `PackageManager.canRequestPackageInstalls()`) and `openInstallPermissionSettings` (`Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES` for this package, with fallbacks) on the existing `uz.mrlg.riyaplay/media_store` channel | The permission has to be checked and requested from somewhere; this channel already existed | Yes — device |
+| `lib/services/update_service.dart` | Permission checked **before** the download; `_needsPermission` turns the button into "Ruxsat berish"; `WidgetsBindingObserver` re-checks on resume and continues by itself; `PERMISSION_NOT_GRANTED_ERROR` mid-flight also offers the settings route; `_cleanupDownloadedApk()` removes the ~45 MB APK on a later start | Requirement: never assume the permission, never die, always allow a retry | Partially — see the test table |
+
 ### OTA updates (2026-08-15)
 
 | File | Change | Why | Tested |
@@ -709,6 +766,23 @@ device:
 | Already up to date | temporary repo `Ashinch/ReadYou` (tag `0.10.x` < `1.0.1`) | Snackbar "Ilova eng so'nggi versiyada (1.0.1-debug)" — note the `-debug` suffix parsed correctly |
 | No internet | `adb shell svc data disable` | Log `Yangilanishni tekshirish muvaffaqiyatsiz: Internetga ulanib bo'lmadi`, no crash |
 | GitHub rate limit (403) | observed from the workstation while inspecting the API, and reported from the device after the first real release | Now falls back to the atom feed instead of failing |
+
+**Install flow (device, 2026-08-16).** The install permission was forced with
+`adb shell appops set uz.mrlg.riyaplay.debug REQUEST_INSTALL_PACKAGES deny`.
+
+| Test | Result |
+| --- | --- |
+| 1a. Permission OFF, press "Yangilash" | **PASS** — no download starts; the dialog explains that "Noma'lum ilovalarni o'rnatish" is required and the button becomes "Ruxsat berish". No crash |
+| 1b. Press "Ruxsat berish" | **PASS** — `com.android.settings/…Settings$ManageAppExternalSourcesActivity` opens, i.e. the per-app screen, not a generic one |
+| 1c. Enable, return, install | **NOT RUN** — the device was disconnected mid-test |
+| 2. Permission ON from the start | **NOT RUN** |
+| 3. Return from Settings without enabling | **NOT RUN** |
+| 4. Failed / incomplete download | **NOT RUN** — the plugin reports `DOWNLOAD_ERROR`, which the dialog already renders, but it was not provoked |
+
+> The device left the USB session before the remaining cases could run. Also
+> note: `REQUEST_INSTALL_PACKAGES` for `uz.mrlg.riyaplay.debug` is still on
+> `deny` from the test — restore it with
+> `adb shell appops set uz.mrlg.riyaplay.debug REQUEST_INSTALL_PACKAGES default`.
 
 **After the first real release (`v1.0.2`, published 2026-08-15 with
 `flutter build apk --release --split-per-abi`):**
@@ -1089,7 +1163,19 @@ New:
 
 ## Next Recommended Step
 
-**Republish with an APK whose own version actually changed.** The whole OTA
+**Finish the install-flow tests that the disconnect cut short**, on the same
+device and with the same `appops` trick:
+
+1. `adb shell appops set uz.mrlg.riyaplay.debug REQUEST_INSTALL_PACKAGES deny`
+   → "Yangilash" → "Ruxsat berish" → enable the switch → come back → the
+   download must start by itself and the installer must open.
+2. Return from Settings **without** enabling → expect a message and a working
+   "Ruxsat berish" button, no crash.
+3. `… REQUEST_INSTALL_PACKAGES allow` → "Yangilash" → download and installer
+   with no detour.
+4. Restore the switch: `… REQUEST_INSTALL_PACKAGES default`.
+
+**Then: republish with an APK whose own version actually changed.** The whole OTA
 chain is now proven end to end, but `v1.0.2` and `v1.0.3` are byte-identical
 files reporting `versionName=1.0.1, versionCode=2002`, so a device that
 installs "1.0.3" still calls itself 1.0.1 and would be offered the same update

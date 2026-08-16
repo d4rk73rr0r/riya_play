@@ -1,11 +1,14 @@
 package uz.mrlg.riyaplay
 
 import android.content.ContentValues
+import android.content.Intent
 import android.media.MediaScannerConnection
+import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.os.StatFs
 import android.provider.MediaStore
+import android.provider.Settings
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -61,6 +64,11 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
                     "getFreeBytes" -> result.success(freeBytes())
+                    "canInstallPackages" -> result.success(canInstallPackages())
+                    "openInstallPermissionSettings" -> {
+                        openInstallPermissionSettings()
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -78,6 +86,43 @@ class MainActivity : FlutterActivity() {
         } catch (e: Exception) {
             -1L
         }
+
+    /**
+     * Can this app hand an APK to the system installer?
+     *
+     * `REQUEST_INSTALL_PACKAGES` in the manifest is not enough: since API 26
+     * the user must also allow "Install unknown apps" for this specific app,
+     * and that switch can be turned off again at any time. Without it the
+     * installer refuses the file, so the OTA flow has to ask first.
+     */
+    private fun canInstallPackages(): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            packageManager.canRequestPackageInstalls()
+        } else {
+            true
+        }
+
+    /** Opens the per-app "Install unknown apps" screen for this package. */
+    private fun openInstallPermissionSettings() {
+        try {
+            val intent =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    Intent(
+                        Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                        Uri.parse("package:$packageName")
+                    )
+                } else {
+                    Intent(Settings.ACTION_SECURITY_SETTINGS)
+                }
+            startActivity(intent)
+        } catch (e: Exception) {
+            // Ba'zi qurilmalarda bu ekran yo'q — umumiy sozlamalarga tushamiz.
+            try {
+                startActivity(Intent(Settings.ACTION_SETTINGS))
+            } catch (_: Exception) {
+            }
+        }
+    }
 
     /** Moves [sourcePath] into Movies/RiyaPlay and returns the public path. */
     private fun saveToMovies(

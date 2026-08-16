@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    `ota_update` plagini yuklab olingan APK'ni ilovaning ichki xotirasidagi
+    `files/ota_update/` papkasiga yozadi va o'rnatish uchun uni FileProvider
+    orqali tizim o'rnatuvchisiga uzatadi. Bu yo'l e'lon qilinmasa,
+    `FileProvider.getUriForFile` "Failed to find configured root" deb istisno
+    tashlaydi va ilova yuklab olish 100% bo'lgan zahoti yopilib qoladi.
+-->
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <files-path
+        name="internal_apk_storage"
+        path="ota_update/"/>
+</paths>

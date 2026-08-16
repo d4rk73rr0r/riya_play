@@ -4,6 +4,8 @@ import 'dart:io';
 
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
 import 'package:ota_update/ota_update.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -60,6 +62,58 @@ class UpdateService {
     'Accept': 'application/vnd.github+json',
   };
 
+  /// Yuklab olingan APK nomi — plagin uni `files/ota_update/` ichiga yozadi.
+  static const String _apkFileName = 'riyaplay_update.apk';
+
+  /// Qurilma bilan aloqa: o'rnatish ruxsatini tekshirish va sozlamalar
+  /// ekranini ochish. Yuklab olishlar uchun allaqachon ochilgan kanal.
+  static const MethodChannel _nativeChannel = MethodChannel(
+    'uz.mrlg.riyaplay/media_store',
+  );
+
+  /// Ilova APK o'rnatishni boshlay oladimi.
+  ///
+  /// Manifestdagi `REQUEST_INSTALL_PACKAGES` yetarli emas: API 26 dan boshlab
+  /// foydalanuvchi shu ilova uchun "Noma'lum ilovalarni o'rnatish"ni alohida
+  /// yoqishi kerak va uni istalgan vaqtda o'chirib ham qo'yishi mumkin.
+  static Future<bool> canInstallPackages() async {
+    if (!Platform.isAndroid) return false;
+    try {
+      return await _nativeChannel.invokeMethod<bool>('canInstallPackages') ??
+          false;
+    } catch (e) {
+      appLogger.d('O‘rnatish ruxsatini tekshirib bo‘lmadi: $e');
+      return false;
+    }
+  }
+
+  /// Shu ilova uchun "Noma'lum ilovalarni o'rnatish" ekranini ochadi.
+  static Future<void> openInstallPermissionSettings() async {
+    try {
+      await _nativeChannel.invokeMethod<void>('openInstallPermissionSettings');
+    } catch (e) {
+      appLogger.d('Sozlamalar ekranini ochib bo‘lmadi: $e');
+    }
+  }
+
+  /// O'rnatishga uzatilgan eski APK'ni o'chiradi.
+  ///
+  /// Fayl ~45 MB va ilovaning ichki xotirasida yotadi. O'rnatish boshlangan
+  /// zahoti o'chirib bo'lmaydi — tizim o'rnatuvchisi uni o'sha paytda o'qiydi
+  /// — shuning uchun keyingi ishga tushishda tozalanadi.
+  static Future<void> _cleanupDownloadedApk() async {
+    try {
+      final dir = await getApplicationSupportDirectory();
+      final apk = File('${dir.path}/ota_update/$_apkFileName');
+      if (await apk.exists()) {
+        await apk.delete();
+        appLogger.d('Eski yangilanish APK fayli o‘chirildi');
+      }
+    } catch (e) {
+      appLogger.d('APK faylini o‘chirib bo‘lmadi: $e');
+    }
+  }
+
   /// "Keyinroq" bosilgan bo'lsa, shu seansda boshqa so'ralmaydi. Qo'lda
   /// tekshirish bu bayroqni chetlab o'tadi.
   static bool _declinedThisSession = false;
@@ -84,6 +138,7 @@ class UpdateService {
           'Yangilanish so\'ralmadi: ${info.tagName} allaqachon o\'rnatilgan '
           '(reliz ichidagi versiya teg bilan mos emas)',
         );
+        await _cleanupDownloadedApk();
         return;
       }
       if (!context.mounted) return;
@@ -565,20 +620,100 @@ class _UpdateDialog extends StatefulWidget {
   State<_UpdateDialog> createState() => _UpdateDialogState();
 }
 
-class _UpdateDialogState extends State<_UpdateDialog> {
+class _UpdateDialogState extends State<_UpdateDialog>
+    with WidgetsBindingObserver {
   StreamSubscription<OtaEvent>? _subscription;
   double _progress = 0;
   bool _isWorking = false;
   bool _hasError = false;
   String _status = '';
 
+  /// Foydalanuvchi sozlamalar ekraniga yuborildi va qaytishini kutyapmiz.
+  bool _awaitingPermission = false;
+
+  /// O'rnatish ruxsati yo'q — tugma "Ruxsat berish"ga aylanadi.
+  bool _needsPermission = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _subscription?.cancel();
     super.dispose();
   }
 
-  void _startUpdate() {
+  /// Sozlamalardan qaytgach ruxsat yoqilganini tekshiramiz.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed || !_awaitingPermission) return;
+    _awaitingPermission = false;
+    _resumeAfterSettings();
+  }
+
+  Future<void> _resumeAfterSettings() async {
+    final granted = await UpdateService.canInstallPackages();
+    if (!mounted) return;
+    if (granted) {
+      setState(() {
+        _needsPermission = false;
+        _hasError = false;
+        _status = '';
+      });
+      _download();
+    } else {
+      setState(() {
+        _needsPermission = true;
+        _hasError = true;
+        _status =
+            'Ruxsat hali berilmagan. "Ruxsat berish"ni bosib, ushbu ilova '
+            'uchun "Noma‘lum ilovalarni o‘rnatish"ni yoqing.';
+      });
+    }
+  }
+
+  /// "Yangilash" bosilganda: avval o'rnatish ruxsati, keyin yuklab olish.
+  ///
+  /// Ruxsatni yuklab olishdan OLDIN so'raymiz — 45 MB ni yuklab olib,
+  /// oxirida "ruxsat yo'q" deyish foydalanuvchining trafigini behuda sarflaydi.
+  Future<void> _startUpdate() async {
+    setState(() {
+      _hasError = false;
+      _status = 'Tekshirilmoqda...';
+    });
+
+    final granted = await UpdateService.canInstallPackages();
+    if (!mounted) return;
+
+    if (!granted) {
+      setState(() {
+        _needsPermission = true;
+        _status =
+            'Yangilanishni o‘rnatish uchun ushbu ilovaga "Noma‘lum '
+            'ilovalarni o‘rnatish" ruxsatini berish kerak.';
+      });
+      return;
+    }
+
+    _download();
+  }
+
+  /// Sozlamalar ekranini ochadi; qaytgandan keyin [didChangeAppLifecycleState]
+  /// ruxsatni qayta tekshiradi va yuklab olishni o'zi davom ettiradi.
+  Future<void> _requestPermission() async {
+    setState(() {
+      _hasError = false;
+      _status = 'Sozlamalar ochilmoqda...';
+    });
+    _awaitingPermission = true;
+    await UpdateService.openInstallPermissionSettings();
+  }
+
+  void _download() {
     setState(() {
       _isWorking = true;
       _hasError = false;
@@ -590,7 +725,7 @@ class _UpdateDialogState extends State<_UpdateDialog> {
       _subscription = OtaUpdate()
           .execute(
             widget.info.apkUrl,
-            destinationFilename: 'riyaplay_update.apk',
+            destinationFilename: UpdateService._apkFileName,
           )
           .listen(_onEvent, onError: _onStreamError);
     } catch (e) {
@@ -616,9 +751,11 @@ class _UpdateDialogState extends State<_UpdateDialog> {
       case OtaStatus.INSTALLATION_DONE:
         setState(() => _status = 'O‘rnatildi');
       case OtaStatus.PERMISSION_NOT_GRANTED_ERROR:
+        // Ruxsat yuklab olish davomida o'chirib qo'yilgan bo'lishi mumkin.
+        setState(() => _needsPermission = true);
         _fail(
-          'Ruxsat berilmadi. Sozlamalardan ushbu ilovaga "Noma‘lum '
-          'ilovalarni o‘rnatish" ruxsatini bering.',
+          'Ruxsat berilmadi. "Ruxsat berish"ni bosib, ushbu ilova uchun '
+          '"Noma‘lum ilovalarni o‘rnatish"ni yoqing.',
         );
       case OtaStatus.ALREADY_RUNNING_ERROR:
         _fail('Yuklash allaqachon boshlangan');
@@ -724,8 +861,12 @@ class _UpdateDialogState extends State<_UpdateDialog> {
                 backgroundColor: themeProvider.accentColor,
                 foregroundColor: Colors.white,
               ),
-              onPressed: _startUpdate,
-              child: Text(_hasError ? 'Qayta urinish' : 'Yangilash'),
+              onPressed: _needsPermission ? _requestPermission : _startUpdate,
+              child: Text(
+                _needsPermission
+                    ? 'Ruxsat berish'
+                    : (_hasError ? 'Qayta urinish' : 'Yangilash'),
+              ),
             ),
         ],
       ),
