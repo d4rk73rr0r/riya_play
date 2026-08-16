@@ -1,7 +1,14 @@
 name: riya_play
 description: Riya Play Downloader Flutter App
 publish_to: 'none'
-version: 1.0.1+2
+# Versiyaning yagona manbasi. `flutter build` shu yerdan `android/local.properties`
+# ga `flutter.versionName` / `flutter.versionCode` yozadi, `build.gradle.kts` esa
+# o'sha qiymatlarni o'qiydi — qo'lda hech qayerga yozib qo'yish shart emas.
+#
+# `--split-per-abi` bilan yig'ilganda APK ichidagi versionCode ABI siljishi bilan
+# hisoblanadi: armeabi-v7a = 1000 + N, arm64-v8a = 2000 + N, x86_64 = 4000 + N.
+# Ya'ni `+5` arm64 uchun 2005 beradi (qurilmadagi 2004 dan katta).
+version: 1.0.4+5
 
 environment:
   sdk: ^3.7.2

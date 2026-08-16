@@ -316,11 +316,20 @@ class DownloadService {
   /// would be half a gigabyte of heap and an OOM kill on most devices.
   static const int _maxInFlightBytes = 64 * 1024 * 1024;
 
-  /// O'lchangan qiymat: 24 ta ulanish 7.23 MB/s berdi, 10 tasi — 5.55 MB/s,
-  /// 48 tasi esa beqaror bo'lib ilovani qayta ishga tushirdi. Boshlang'ich
-  /// qiymat maksimaldan oshmasligi shart, aks holda faqat birinchi guruh
-  /// keng bo'lib, qolganlari `_adaptConcurrency` tomonidan qisiladi.
-  static const int _maxSegmentConcurrency = 24;
+  /// O'lchangan qiymatlar: 10 ta ulanish 5.55 MB/s, 24 tasi 7.23 MB/s berdi.
+  /// 48 ta birinchi urinishda beqaror bo'lib ilovani qayta ishga tushirgan
+  /// edi, lekin o'shanda boshqa xotira xatolari ham bor edi (Bug 17 —
+  /// `safeDispose` ExoPlayer'ni oqizardi). Ular tuzatilgandan keyin 48
+  /// loyiha egasining qaroriga ko'ra qaytarildi.
+  ///
+  /// DIQQAT: 48 qayta o'lchanmagan. `_maxInFlightBytes` (64 MB) baribir
+  /// ushlab turadi, ammo agar yuklab olish paytida ilova yana qayta ishga
+  /// tushsa — birinchi shubha shu qiymatga.
+  ///
+  /// Boshlang'ich qiymat maksimaldan oshmasligi shart, aks holda faqat
+  /// birinchi guruh keng bo'lib, qolganlari `_adaptConcurrency` tomonidan
+  /// qisiladi.
+  static const int _maxSegmentConcurrency = 48;
   static const int _minSegmentConcurrency = 2;
 
   /// Starting batch size, before any segment has been measured.
