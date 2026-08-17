@@ -184,6 +184,30 @@ they were not enough. Chosen by the project owner over enabling the blur.
 0.38 → 0.70 change looked like it had not applied at all. Sampling the actual
 pixel settled it. Do the same next time.
 
+#### System navigation bar buttons over bright content
+
+Same problem one level down: content also runs under the navigation bar, so
+the system's white buttons landed on bright posters.
+
+**`systemNavigationBarColor` does not work here.** Setting it to a translucent
+`0xA3000000` changed nothing — under `SystemUiMode.edgeToEdge` the system
+ignores the colour. Verified by sampling the same pixel across builds: with
+the colour set, the navigation-bar strip was still `#C5AF58` over a yellow
+poster, i.e. untouched.
+
+**`systemNavigationBarContrastEnforced: true` does work.** The system paints
+its own translucent scrim behind the bar. Measured on identical content:
+
+| Setting | pixel in the nav-bar strip |
+| --- | --- |
+| contrast enforced `false` | `#C5AF58` / `#95734D` |
+| contrast enforced `true` | `#766935` / `#59452E` |
+
+That is roughly 40 % darker, enough for the white buttons. A third build with
+`systemNavigationBarColor` back to `Colors.transparent` produced pixel-identical
+output, confirming the flag is doing all the work and the colour is inert — so
+the colour stays transparent and the comment records why.
+
 ### Session of 2026-08-16, part 6 — the idle 120 fps cause, navigation bar back, selected-only labels
 
 Three requested changes. All measured on the same profile build and device.
@@ -1705,6 +1729,9 @@ New:
 - **Do not judge a colour/alpha change from a downscaled screenshot.** The
   0.38 → 0.70 scrim change looked like a no-op until the rendered pixel was
   sampled (`#ABABAB` → `#5C5C5C`).
+- **Do not set `systemNavigationBarColor` to darken the navigation bar.** Under
+  `SystemUiMode.edgeToEdge` the system ignores it — measured, pixel-identical
+  with and without. `systemNavigationBarContrastEnforced: true` is what works.
 - **Do not lower `blurSigma` hoping to make the blur cheap.** σ=10 measured
   *worse* than σ=18. The cost is the backdrop read, not the radius.
 - **Do not call `SystemChrome.setEnabledSystemUIMode` from a screen.** Go
