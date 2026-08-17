@@ -147,6 +147,21 @@ strip's durations (`55:29`, `58:08`) now visible and **no** overflow banner;
 
 `flutter analyze lib`: 5 pre-existing infos, the unchanged baseline.
 
+#### Version bumped to `1.0.5+6`
+
+`v1.0.4` turned out to be **published already** (to `d4rk73rr0r/rplay-releases`,
+2026-08-17 06:28 UTC, all three split APKs) — the Remaining Work row calling it
+"not started" was stale. The next release therefore has to clear it, so
+`pubspec.yaml` is now `1.0.5+6`: with Flutter's ABI offsets that is
+`armeabi-v7a 1006`, `arm64-v8a 2006`, `x86_64 4006`, verified with
+`aapt dump badging` on all three built APKs. The device's install is
+`1.0.4 / 2005`, so `2006` clears it by one.
+
+The three release APKs happen to have byte counts identical to the published
+`v1.0.4` assets (47,380,622 / 57,514,164 / 51,296,132). As established earlier
+in this document, **equal asset sizes are not evidence of an identical build** —
+`aapt` reports different versions for these.
+
 ### Session of 2026-08-16, part 2 — the install-permission flow, end to end
 
 The four install-flow scenarios that the previous session left unfinished were
@@ -1592,7 +1607,8 @@ verified on device.)
 | ~~Finish the download+install test against the real release~~ | — | — | Medium | **DONE (2026-08-15)** | `v1.0.3` downloaded and installed through the app; `PackageInstallerSession: Session installed` |
 | ~~Republish with a correctly versioned APK~~ | — | — | High | **DONE / claim was wrong (2026-08-16)** | `aapt dump badging` on the published `v1.0.3` arm64 asset reports `versionCode=2004 versionName=1.0.3`; the device install agrees. Nothing to republish |
 | ~~Find out where `versionCode=2004` comes from~~ | — | `pubspec.yaml` | Medium | **DONE (2026-08-16)** | Flutter's `--split-per-abi` ABI offset (`arm64 = 2000 + N`). `pubspec.yaml` was always the only source; version is now `1.0.4+5` → arm64 `2005` |
-| **Publish `v1.0.4`** | Built and verified locally, not uploaded | — | Medium | Not started | Upload `app-<abi>-release.apk` from `build/app/outputs/flutter-apk/` to a `v1.0.4` release, then re-run the OTA check on a device. Note the binaries in that directory now also carry the part-4 performance work |
+| ~~Publish `v1.0.4`~~ | Built and verified locally, not uploaded | — | Medium | **DONE** | `v1.0.4` was published to `d4rk73rr0r/rplay-releases` on 2026-08-17 06:28 UTC with all three split APKs — the "not started" note above it was stale. Superseded by `v1.0.5` |
+| **Publish `v1.0.5`** | Version bumped to `1.0.5+6`; the three APKs are built and verified but not uploaded | `pubspec.yaml` | Medium | In progress | `gh release create v1.0.5` against `d4rk73rr0r/rplay-releases` with the three `app-<abi>-release.apk` files, then re-run "Yangilanishni tekshirish" on a device running `1.0.4 / 2005` |
 | **Find the idle ~120 fps redraw on the home tab** | Measured, cause not isolated; the ring animation was ruled out | `lib/screens/index_screen.dart` | Medium | Not started | DevTools timeline on a profile build while the home tab sits untouched |
 | **Measure memory over navigation cycles** | Not covered by the audit | — | Medium | **Partly done (2026-08-17)** | The player half is measured on release: four play → Back cycles, Java heap 139 → 140 → 166 → 95 MB, bounded. Still unmeasured: Home → Catalog → FilmScreen cycles without playback, and TV channels |
 | **Re-measure segment concurrency at 48** | Raised from 24 by the owner's decision without a new measurement | `lib/services/download_service.dart` | Medium | Not started | Download one ~450 MB episode and compare throughput and stability against the recorded 24 → 9.11 MB/s effective |
