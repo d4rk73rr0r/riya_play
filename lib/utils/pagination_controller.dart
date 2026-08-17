@@ -117,6 +117,19 @@ class PaginationController<T> extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Moves the first item matching [test] to the head of the list.
+  ///
+  /// Server-sorted lists (e.g. "Ko'rishni davom ettirish", sorted by
+  /// `updated_at`) would otherwise need a full refetch just to show that one
+  /// entry moved to the front. Returns false when nothing matched.
+  bool moveToFront(bool Function(T item) test) {
+    final index = items.indexWhere(test);
+    if (index < 0) return false;
+    if (index > 0) items.insert(0, items.removeAt(index));
+    notifyListeners();
+    return true;
+  }
+
   void clear() {
     items.clear();
     notifyListeners();

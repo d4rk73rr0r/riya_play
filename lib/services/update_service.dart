@@ -840,17 +840,9 @@ class _UpdateDialogState extends State<_UpdateDialog>
             ),
             if (info.notes.isNotEmpty) ...[
               const SizedBox(height: 12),
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxHeight: 160),
-                child: SingleChildScrollView(
-                  child: Text(
-                    info.notes,
-                    style: TextStyle(
-                      fontSize: 13,
-                      color: themeProvider.subTextColor,
-                    ),
-                  ),
-                ),
+              _ReleaseNotes(
+                notes: info.notes,
+                color: themeProvider.subTextColor,
               ),
             ],
             if (_status.isNotEmpty) ...[
@@ -900,6 +892,99 @@ class _UpdateDialogState extends State<_UpdateDialog>
                 _needsPermission
                     ? 'Ruxsat berish'
                     : (_hasError ? 'Qayta urinish' : 'Yangilash'),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Reliz izohi. Matn baland bo'lsa 160 px lik oynada aylantiriladi.
+///
+/// Aylantirish ilgari ham ishlagan, lekin buni ko'rsatadigan hech narsa yo'q
+/// edi: matn oxirgi qatorda kesilgandek ko'rinardi. Shuning uchun doimiy
+/// ko'rinadigan `Scrollbar` va pastki qorayish qo'shildi — ikkalasi ham
+/// pastda yana matn borligini bildiradi va oxiriga yetganda yo'qoladi.
+class _ReleaseNotes extends StatefulWidget {
+  final String notes;
+  final Color color;
+
+  const _ReleaseNotes({required this.notes, required this.color});
+
+  @override
+  State<_ReleaseNotes> createState() => _ReleaseNotesState();
+}
+
+class _ReleaseNotesState extends State<_ReleaseNotes> {
+  static const double _maxHeight = 160;
+  static const double _fadeHeight = 28;
+
+  final ScrollController _controller = ScrollController();
+  bool _hasMoreBelow = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addListener(_syncFade);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _syncFade());
+  }
+
+  void _syncFade() {
+    if (!_controller.hasClients) return;
+    final more = _controller.position.extentAfter > 4;
+    if (more != _hasMoreBelow && mounted) {
+      setState(() => _hasMoreBelow = more);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.removeListener(_syncFade);
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxHeight: _maxHeight),
+      child: Stack(
+        children: [
+          Scrollbar(
+            controller: _controller,
+            thumbVisibility: true,
+            child: SingleChildScrollView(
+              controller: _controller,
+              // Scrollbar matn ustiga tushmasin.
+              padding: const EdgeInsets.only(right: 10),
+              child: Text(
+                widget.notes,
+                style: TextStyle(fontSize: 13, color: widget.color),
+              ),
+            ),
+          ),
+          if (_hasMoreBelow)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: IgnorePointer(
+                child: Container(
+                  height: _fadeHeight,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        Colors.black.withOpacity(0.0),
+                        // Dialog sirti qoramtir shisha, shuning uchun
+                        // qorayish unga qo'shilib ketadi.
+                        Colors.black.withOpacity(0.65),
+                      ],
+                    ),
+                  ),
+                ),
               ),
             ),
         ],

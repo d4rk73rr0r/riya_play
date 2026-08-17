@@ -147,6 +147,42 @@ strip's durations (`55:29`, `58:08`) now visible and **no** overflow banner;
 
 `flutter analyze lib`: 5 pre-existing infos, the unchanged baseline.
 
+#### "Ko'rishni davom ettirish" no longer refetches the whole list
+
+Returning from the player used to run `_pagination.refresh()` in
+`LatestViewedScreen.didPopNext`, i.e. the whole 20-item page was requested
+again and the grid rebuilt from scratch, to reflect a change in **one** entry.
+
+The playback path now updates that entry alone:
+
+- `LatestViewedCard` awaits `VideoLauncher.playFromLatestViewed` (which already
+  waits for the exit write), then reads the new position with
+  `ApiService.getWatchedSeconds(episodeId)` and writes it into its own item.
+- The screen moves that item to the head of the list with the new
+  `PaginationController.moveToFront(test)` — the server sorts by `updated_at`,
+  so the just-watched entry belongs first, and doing it locally costs no
+  request.
+- `_skipNextPopRefresh` makes `didPopNext` skip its full refresh for that trip.
+  The long-press path (film page) still refreshes fully: a different episode
+  may have been watched there, so both the times and the order can change.
+
+Net effect per playback: one `getEpisodeDetails` request instead of a full
+page fetch, no spinner, no scroll jump.
+
+**Verified on device**, twice: `Lilining sarguzashtlari` `01:20 → 02:07` with
+the scroll position and every other card untouched; then `Klon` `23:24 → 24:11`
+moving from 4th place to 1st while the remaining cards kept their relative
+order.
+
+#### The update dialog's release notes got a scrollbar and a fade
+
+The notes were always scrollable (`ConstrainedBox(maxHeight: 160)` +
+`SingleChildScrollView`), but nothing said so, so a long body read as
+truncated. `_ReleaseNotes` now adds `Scrollbar(thumbVisibility: true)` and a
+28 px bottom fade that is drawn only while `extentAfter > 4`. Verified on
+device against the real `v1.0.5` notes: the bar is visible, and scrolling to
+the end removes the fade and shows the last line in full.
+
 #### Version bumped to `1.0.5+6`
 
 `v1.0.4` turned out to be **published already** (to `d4rk73rr0r/rplay-releases`,
@@ -1723,7 +1759,9 @@ Modified:
 - `lib/screens/index_screen.dart` — `_primeFromCache`, cache writes, continue-watching progress/colour fix, `VideoLauncher` tap; 2026-08-16 (part 4): `_wasOffline` guard, parallel `Future.wait` home load, `CircleProgressPainter` driven by `repaint:` inside a `RepaintBoundary`.
 - `lib/main.dart` — 2026-08-16 (part 4): `initialization()` no longer pads the splash with `Future.delayed`/`Future.doWhile`.
 - `android/app/build.gradle.kts` — 2026-08-16 (part 4): `profile` build type installs as `.debug` with the debug signing config.
-- `lib/screens/latestviewed_screen.dart` — correct film id, progress helper, tap → playback, long-press → film page.
+- `lib/screens/latestviewed_screen.dart` — correct film id, progress helper, tap → playback, long-press → film page; 2026-08-17: the playback path updates one card and moves it to the front instead of refetching the page.
+- `lib/utils/pagination_controller.dart` — 2026-08-17: `moveToFront(test)`.
+- `lib/services/update_service.dart` — 2026-08-17: `_ReleaseNotes` (scrollbar + bottom fade).
 - `lib/screens/video_player_screen.dart` — server-only watch position, real `startAt` field; 2026-08-13: working exit write, 30 s periodic sync, `pendingPositionFlush`.
 - `lib/utils/video_launcher.dart` — 2026-08-13: waits for the exit write before the caller reloads its list.
 - `lib/utils/video_helpers.dart` — 2026-08-13: `safeDispose` now passes `forceDispose: true` (Bug 17).
@@ -1916,10 +1954,15 @@ New:
   `showUnselectedLabels`.
 - **Do not raise the bottom-menu label size above 10 pt.** The glass panel is
   inset, so each slot is ~72 dp and "Bosh sahifa" is clipped at 11 pt.
-- **Do not "fix" the update dialog's release notes for being cut off.** They are
-  already inside a 160 px `ConstrainedBox` with a `SingleChildScrollView` and
-  scroll on touch — verified by hand on the `v1.0.5` dialog. What is missing is
-  only a visual affordance (scrollbar or fade), not the scrolling itself.
+- **Do not "fix" the update dialog's release notes for being cut off.** They sit
+  in a 160 px `ConstrainedBox` with a `SingleChildScrollView` and have always
+  scrolled; as of 2026-08-17 they also carry a `Scrollbar` and a bottom fade
+  (`_ReleaseNotes`), so nothing about them is broken.
+- **Do not restore `_pagination.refresh()` in `LatestViewedScreen.didPopNext`
+  for the playback path.** Refetching 20 entries to reflect one changed entry is
+  exactly what was removed: the card now updates its own position and the screen
+  moves it to the front with `PaginationController.moveToFront`. The long-press
+  (film page) path still refreshes fully, on purpose.
 - **Do not `flutter build apk --release` and expect to install it over the
   device's release build.** Without `--split-per-abi` there is no ABI offset, so
   the APK is `versionCode 5` against the installed `2005` and `adb install -r`

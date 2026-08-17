@@ -102,11 +102,38 @@ class _LatestViewedScreenState extends State<LatestViewedScreen>
     if (route is PageRoute) routeObserver.subscribe(this, route);
   }
 
-  /// Pleer (yoki film sahifasi) yopilgach ro'yxat qayta o'qiladi — vaqt ham,
-  /// tartib ham o'zgargan bo'lishi mumkin.
+  /// Kartadan pleer ochilganda `didPopNext` ro'yxatni qayta o'qimaydi.
+  ///
+  /// Butun ro'yxatni qayta so'rash bitta karta o'zgargani uchun ortiqcha:
+  /// grid qaytadan chiziladi, aylantirish holati va rasm o'rni sakraydi.
+  /// Pleerdan qaytgach karta o'z pozitsiyasini o'zi yangilaydi
+  /// ([_LatestViewedCardState._startPlayback]), shuning uchun bu yerda
+  /// faqat bayroq qo'yiladi.
+  bool _skipNextPopRefresh = false;
+
+  void _onPlaybackStart() => _skipNextPopRefresh = true;
+
+  /// Karta pleerdan qaytib, yangi pozitsiyani olgach chaqiriladi.
+  ///
+  /// Server ro'yxatni `updated_at` bo'yicha saralaydi, ya'ni endigina
+  /// ko'rilgan yozuv birinchi bo'lishi kerak. Buning uchun butun ro'yxatni
+  /// qayta so'rash shart emas — yozuvni mahalliy ro'yxat boshiga surib
+  /// qo'yamiz, tarmoqqa so'rov ketmaydi.
+  void _onWatchedUpdated(dynamic item) {
+    if (!mounted) return;
+    _pagination.moveToFront((e) => identical(e, item));
+  }
+
+  /// Film sahifasi (uzoq bosish) yopilgach ro'yxat qayta o'qiladi — u yerda
+  /// boshqa epizod ko'rilgan bo'lishi mumkin, ya'ni vaqt ham, tartib ham
+  /// o'zgargan bo'lishi mumkin.
   @override
   void didPopNext() async {
     if (!mounted) return;
+    if (_skipNextPopRefresh) {
+      _skipNextPopRefresh = false;
+      return;
+    }
     await VideoLauncher.awaitPositionFlush();
     if (mounted) await _pagination.refresh();
   }
@@ -213,6 +240,8 @@ class _LatestViewedScreenState extends State<LatestViewedScreen>
           onToggleEditMode: _toggleEditMode,
           onShowClearAllDialog: _showClearAllDialog,
           onRemoveLatestViewed: _removeLatestViewed,
+          onPlaybackStart: _onPlaybackStart,
+          onWatchedUpdated: _onWatchedUpdated,
           animationController: _animationController,
           scaleAnimation: _scaleAnimation,
           onRefresh: _refresh,
@@ -232,6 +261,8 @@ class ContentWidget extends StatelessWidget {
   final VoidCallback onToggleEditMode;
   final VoidCallback onShowClearAllDialog;
   final ValueChanged<int> onRemoveLatestViewed;
+  final VoidCallback onPlaybackStart;
+  final ValueChanged<dynamic> onWatchedUpdated;
   final AnimationController animationController;
   final Animation<double> scaleAnimation;
   final Future<void> Function() onRefresh;
@@ -247,6 +278,8 @@ class ContentWidget extends StatelessWidget {
     required this.onToggleEditMode,
     required this.onShowClearAllDialog,
     required this.onRemoveLatestViewed,
+    required this.onPlaybackStart,
+    required this.onWatchedUpdated,
     required this.animationController,
     required this.scaleAnimation,
     required this.onRefresh,
@@ -327,12 +360,18 @@ class ContentWidget extends StatelessWidget {
             ),
             delegate: SliverChildBuilderDelegate(
               (context, index) => LatestViewedCard(
+                // Karta o'z yozuvi bilan bog'lanadi: ro'yxat qayta o'qilganda
+                // ham holat (masalan yangilangan pozitsiya) aralashib
+                // ketmasin.
+                key: ValueKey(latestviewed[index]['id']),
                 item: latestviewed[index],
                 isEditing: isEditing,
                 onRemove:
                     () => onRemoveLatestViewed(
                       latestviewed[index]['second']['film_id'],
                     ),
+                onPlaybackStart: onPlaybackStart,
+                onWatchedUpdated: onWatchedUpdated,
               ),
               childCount: latestviewed.length,
             ),
@@ -595,11 +634,20 @@ class LatestViewedCard extends StatefulWidget {
   final bool isEditing;
   final VoidCallback onRemove;
 
+  /// Pleer ochilishidan oldin chaqiriladi, ekran `didPopNext` dagi to'liq
+  /// yangilashni o'tkazib yuborishi uchun.
+  final VoidCallback onPlaybackStart;
+
+  /// Pozitsiya yangilangach chaqiriladi: ekran yozuvni ro'yxat boshiga suradi.
+  final ValueChanged<dynamic> onWatchedUpdated;
+
   const LatestViewedCard({
     super.key,
     required this.item,
     required this.isEditing,
     required this.onRemove,
+    required this.onPlaybackStart,
+    required this.onWatchedUpdated,
   });
 
   @override
@@ -628,6 +676,37 @@ class _LatestViewedCardState extends State<LatestViewedCard>
   void dispose() {
     _controller.dispose();
     super.dispose();
+  }
+
+  /// Pleerni ochadi va qaytgach faqat shu yozuvni yangilaydi: yangi
+  /// pozitsiya o'qiladi va yozuv ro'yxat boshiga suriladi.
+  ///
+  /// `VideoLauncher` pozitsiya yozuvi serverga yetishini allaqachon kutadi,
+  /// shuning uchun undan keyingi so'rov yangi qiymatni qaytaradi. Butun
+  /// ro'yxatni qayta o'qish shart emas — o'zgargani bitta yozuv.
+  Future<void> _startPlayback() async {
+    widget.onPlaybackStart();
+    await VideoLauncher.playFromLatestViewed(context, widget.item);
+    if (!mounted) return;
+
+    final episodeId = latestViewedEpisodeId(widget.item);
+    if (episodeId == null) return;
+
+    final seconds = await ApiService.getWatchedSeconds(episodeId);
+    // 0 — hech qachon boshlanmagan yoki so'rov muvaffaqiyatsiz; eski qiymat
+    // aniqroq, shuning uchun tegmaymiz.
+    if (!mounted || seconds <= 0) return;
+    if (seconds == latestViewedSeconds(widget.item)) return;
+
+    final second = widget.item['second'];
+    if (second is Map) {
+      second['time'] = seconds;
+    } else {
+      widget.item['second'] = {'time': seconds};
+    }
+    // Ekran yozuvni ro'yxat boshiga suradi va shu bilan gridni qayta
+    // chizadi — kartaning o'z `setState` i ortiqcha.
+    widget.onWatchedUpdated(widget.item);
   }
 
   @override
@@ -664,10 +743,9 @@ class _LatestViewedCardState extends State<LatestViewedCard>
       onTapUp: (_) {
         _controller.reverse();
         // Bosilganda ko'rish darhol davom etadi; film sahifasi uzoq bosish
-        // orqali ochiladi. Qaytgandan keyingi yangilash ekranning
-        // `didPopNext` ida.
+        // orqali ochiladi. Qaytgandan keyin faqat shu karta yangilanadi.
         if (!widget.isEditing) {
-          VideoLauncher.playFromLatestViewed(context, widget.item);
+          _startPlayback();
         }
       },
       onLongPress: () {
