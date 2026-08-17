@@ -672,7 +672,7 @@ class _FilmScreenState extends State<FilmScreen>
                       : Colors.grey[100]!,
               child: SizedBox(
                 width: (MediaQuery.of(context).size.width - 32) / 2 - 12,
-                height: 136,
+                height: _episodeCardHeight,
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -774,6 +774,13 @@ class _FilmScreenState extends State<FilmScreen>
                 onRefresh: _refresh,
                 child: SingleChildScrollView(
                   physics: const AlwaysScrollableScrollPhysics(),
+                  // Ilova edgeToEdge rejimida ishlaydi va kontent tizim
+                  // navigatsiya paneli ostidan o'tadi. Oxirgi element
+                  // ("Barcha qismlar" tugmasi) panel ostida qolib
+                  // ketmasligi uchun shuncha bo'sh joy qo'shamiz.
+                  padding: EdgeInsets.only(
+                    bottom: MediaQuery.of(context).viewPadding.bottom,
+                  ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
@@ -1043,7 +1050,7 @@ class _FilmScreenState extends State<FilmScreen>
                                 const SizedBox.shrink(),
                               const SizedBox(height: 16),
                               SizedBox(
-                                height: 136,
+                                height: _episodeCardHeight,
                                 child:
                                     _isLoadingMore
                                         ? _buildSkeletonLoader()
@@ -1164,6 +1171,11 @@ class _FilmScreenState extends State<FilmScreen>
   }
 }
 
+/// Qism kartasi balandligi: 100 px rasm + nomi (ikki qatorgacha) +
+/// davomiylik. Gorizontal ro'yxat ham shu qiymatdan foydalanadi, aks holda
+/// karta ro'yxatdan baland bo'lib qoladi.
+const double _episodeCardHeight = 160;
+
 class EpisodeCard extends StatelessWidget {
   final dynamic episode;
   final int index;
@@ -1183,7 +1195,9 @@ class EpisodeCard extends StatelessWidget {
 
     return SizedBox(
       width: (MediaQuery.of(context).size.width - 32) / 2 - 12,
-      height: 136,
+      // 136 px yetmasdi: rasm 100 px, ustiga ikki qatorli qism nomi va
+      // davomiylik sig'may "BOTTOM OVERFLOWED BY 8.0 PIXELS" chiqardi.
+      height: _episodeCardHeight,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1279,32 +1293,35 @@ class EpisodeCard extends StatelessWidget {
               ),
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.only(top: 4.0, right: 8.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  episode['name_uz'] ?? "Qism ${index + 1}",
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
-                    color: themeProvider.textColor,
-                  ),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                if (episode['duration'] != null)
+          // Matn qismi qolgan bo'sh joyni oladi: qurilmadagi shrift kattaligi
+          // oshirilganda ham karta chegarasidan chiqib ketmasin.
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 4.0, right: 8.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
                   Text(
-                    _formatDuration(episode['duration']),
+                    episode['name_uz'] ?? "Qism ${index + 1}",
                     style: TextStyle(
                       fontSize: 12,
-                      color: themeProvider.subTextColor,
+                      fontWeight: FontWeight.w500,
+                      color: themeProvider.textColor,
                     ),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
                   ),
-                const SizedBox(height: 6),
-              ],
+                  if (episode['duration'] != null)
+                    Text(
+                      _formatDuration(episode['duration']),
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: themeProvider.subTextColor,
+                      ),
+                    ),
+                ],
+              ),
             ),
           ),
         ],

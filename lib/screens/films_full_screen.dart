@@ -591,7 +591,16 @@ class _FilmsFullScreenState extends State<FilmsFullScreen>
                         onRefresh: () => controller.refresh(),
                         child: GridView.builder(
                           controller: controller.scrollController,
-                          padding: const EdgeInsets.all(16.0),
+                          // Pastki chekka tizim navigatsiya paneli balandligiga
+                          // qo'shiladi: kontent edgeToEdge rejimida panel
+                          // ostidan o'tadi, oxirgi qator esa ko'rinib turishi
+                          // kerak.
+                          padding: EdgeInsets.fromLTRB(
+                            16.0,
+                            16.0,
+                            16.0,
+                            16.0 + MediaQuery.of(context).viewPadding.bottom,
+                          ),
                           gridDelegate:
                               const SliverGridDelegateWithFixedCrossAxisCount(
                                 crossAxisCount: 2,
