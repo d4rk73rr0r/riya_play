@@ -205,7 +205,9 @@ class UpdateService {
     } on SocketException {
       return const UpdateCheckFailed("Internetga ulanib bo'lmadi");
     } on TimeoutException {
-      return const UpdateCheckFailed("GitHub javob bermadi, qayta urinib ko'ring");
+      return const UpdateCheckFailed(
+        "GitHub javob bermadi, qayta urinib ko'ring",
+      );
     } catch (e) {
       return UpdateCheckFailed("Tarmoq xatosi: $e");
     }
@@ -215,13 +217,13 @@ class UpdateService {
     }
     if (response.statusCode == 403 || response.statusCode == 429) {
       // Chegara — API o'rniga atom lentasidan o'qiymiz.
-      appLogger.d('GitHub API chegarasi (${response.statusCode}), atom lentasi');
+      appLogger.d(
+        'GitHub API chegarasi (${response.statusCode}), atom lentasi',
+      );
       return _fetchFromAtom(current, currentName);
     }
     if (response.statusCode != 200) {
-      return UpdateCheckFailed(
-        "GitHub xatosi (${response.statusCode})",
-      );
+      return UpdateCheckFailed("GitHub xatosi (${response.statusCode})");
     }
 
     final Map<String, dynamic> data;
@@ -238,7 +240,9 @@ class UpdateService {
     final tag = (data['tag_name'] as String? ?? '').trim();
     final latest = AppVersion.parse(tag);
     if (latest == null) {
-      return UpdateCheckFailed("Reliz versiyasi noto'g'ri: ${tag.isEmpty ? '—' : tag}");
+      return UpdateCheckFailed(
+        "Reliz versiyasi noto'g'ri: ${tag.isEmpty ? '—' : tag}",
+      );
     }
 
     // Joriy versiya yangiroq bo'lishi ham mumkin (masalan, qo'lda yig'ilgan
@@ -285,7 +289,9 @@ class UpdateService {
     } on SocketException {
       return const UpdateCheckFailed("Internetga ulanib bo'lmadi");
     } on TimeoutException {
-      return const UpdateCheckFailed("GitHub javob bermadi, qayta urinib ko'ring");
+      return const UpdateCheckFailed(
+        "GitHub javob bermadi, qayta urinib ko'ring",
+      );
     } catch (e) {
       return UpdateCheckFailed("Tarmoq xatosi: $e");
     }
@@ -338,7 +344,10 @@ class UpdateService {
       final url = _splitApkUrl(tag, abi);
       try {
         final head = await http
-            .head(Uri.parse(url), headers: const {'User-Agent': 'riya_play-updater'})
+            .head(
+              Uri.parse(url),
+              headers: const {'User-Agent': 'riya_play-updater'},
+            )
             .timeout(const Duration(seconds: 10));
         if (head.statusCode == 200) {
           return _ApkAsset(
@@ -504,7 +513,9 @@ class UpdateService {
   }
 
   static void _showMessage(BuildContext context, String message) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 }
 
@@ -576,12 +587,11 @@ class AppVersion implements Comparable<AppVersion> {
     final match = RegExp(r'(\d+(?:\.\d+)*)(?:\+(\d+))?').firstMatch(text);
     if (match == null) return null;
 
-    final parts =
-        match
-            .group(1)!
-            .split('.')
-            .map((e) => int.tryParse(e) ?? 0)
-            .toList(growable: false);
+    final parts = match
+        .group(1)!
+        .split('.')
+        .map((e) => int.tryParse(e) ?? 0)
+        .toList(growable: false);
     if (parts.isEmpty) return null;
 
     return AppVersion(parts, int.tryParse(match.group(2) ?? '') ?? 0);
@@ -589,9 +599,8 @@ class AppVersion implements Comparable<AppVersion> {
 
   @override
   int compareTo(AppVersion other) {
-    final length = parts.length > other.parts.length
-        ? parts.length
-        : other.parts.length;
+    final length =
+        parts.length > other.parts.length ? parts.length : other.parts.length;
     for (var i = 0; i < length; i++) {
       final a = i < parts.length ? parts[i] : 0;
       final b = i < other.parts.length ? other.parts[i] : 0;
@@ -612,8 +621,6 @@ class _CheckingDialog extends StatelessWidget {
   Widget build(BuildContext context) {
     final themeProvider = Provider.of<ThemeProvider>(context);
     return AlertDialog(
-      backgroundColor: themeProvider.cardColor,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       content: Row(
         children: [
           CircularProgressIndicator(color: themeProvider.accentColor),
@@ -817,8 +824,6 @@ class _UpdateDialogState extends State<_UpdateDialog>
       // Yuklash ketayotganda tasodifan yopilib qolmasin.
       canPop: !_isWorking,
       child: AlertDialog(
-        backgroundColor: themeProvider.cardColor,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         title: const Text('Yangi versiya mavjud'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
@@ -854,7 +859,8 @@ class _UpdateDialogState extends State<_UpdateDialog>
                 _status,
                 style: TextStyle(
                   fontSize: 12,
-                  color: _hasError ? Colors.redAccent : themeProvider.subTextColor,
+                  color:
+                      _hasError ? Colors.redAccent : themeProvider.subTextColor,
                 ),
               ),
             ],

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:riya_play/services/api_service.dart';
+import 'package:riya_play/theme/glass.dart';
 import 'package:riya_play/theme_provider.dart';
 import 'package:flutter_iconly/flutter_iconly.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -444,11 +445,16 @@ class _EditProfileDialogState extends State<EditProfileDialog> {
         bottom: MediaQuery.of(context).viewInsets.bottom,
       ),
       child: Container(
-        padding: const EdgeInsets.all(16),
+        padding: EdgeInsets.fromLTRB(
+          16,
+          16,
+          16,
+          16 + MediaQuery.of(context).viewPadding.bottom,
+        ),
         decoration: BoxDecoration(
-          color: themeProvider.cardColor,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-          border: Border.all(color: themeProvider.borderColor, width: 1),
+          gradient: GlassSurface.gradient,
+          borderRadius: GlassSurface.sheetBorderRadius,
+          border: GlassSurface.sheetBorder,
         ),
         child: SingleChildScrollView(
           child: Column(

@@ -343,7 +343,9 @@ class _AuthScreenState extends State<AuthScreen> {
                     surface: Colors.black,
                     onSurface: Colors.white,
                   ),
-                  dialogTheme: const DialogThemeData(backgroundColor: Colors.black),
+                  dialogTheme: const DialogThemeData(
+                    backgroundColor: Colors.black,
+                  ),
                 ),
                 child: child!,
               );
@@ -520,10 +522,6 @@ class _AuthScreenState extends State<AuthScreen> {
       context: context,
       builder:
           (context) => AlertDialog(
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(16),
-            ),
-            backgroundColor: Colors.black,
             title: const Text(
               "Bir nechta qurilma topildi",
               style: TextStyle(

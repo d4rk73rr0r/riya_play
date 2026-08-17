@@ -1,6 +1,7 @@
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:riya_play/theme/glass.dart';
 
 /// Pastki menyu uchun "suyuq shisha" qatlami.
 ///
@@ -52,27 +53,13 @@ class GlassBottomBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final radius = BorderRadius.circular(borderRadius);
 
+    // Qatlam qiymatlari [GlassSurface] da — dialoglar ham o'shandan oladi,
+    // shunda ikkalasi bir xil quyuqlikda qoladi.
     final surface = DecoratedBox(
       decoration: BoxDecoration(
         borderRadius: radius,
-        // Qatlam quyuq, oq emas, va ancha to'yingan. Kontent panel ortidan
-        // o'tgani uchun menyu yorqin poster ustiga ham tushadi; oq qatlamda
-        // oq ikonkalar butunlay yo'qolardi, 0.38 da ham o'qib bo'lmasdi
-        // (qurilmada tekshirilgan: Katalogdagi oq fonli posterlar).
-        // 0.70/0.58 da kontent hamon ko'rinib turadi, lekin ikonkalar har
-        // qanday fonda ajralib turadi.
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            Colors.black.withValues(alpha: 0.70),
-            Colors.black.withValues(alpha: 0.58),
-          ],
-        ),
-        border: Border.all(
-          color: Colors.white.withValues(alpha: 0.18),
-          width: 0.8,
-        ),
+        gradient: GlassSurface.gradient,
+        border: GlassSurface.border,
       ),
       child: child,
     );

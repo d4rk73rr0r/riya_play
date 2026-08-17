@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:riya_play/services/api_service.dart';
 import 'package:riya_play/screens/film_screen.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:riya_play/theme/glass.dart';
 import 'package:riya_play/theme_provider.dart';
 import 'package:riya_play/utils/pagination_controller.dart';
 import 'package:riya_play/utils/image_cache_manager.dart';
@@ -26,10 +27,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
         PaginationController<dynamic>(
             fetchPage:
                 (page) async => PageResult(
-                  items:
-                      (await ApiService.getWatchHistory(
-                        page: page,
-                      ))['data'],
+                  items: (await ApiService.getWatchHistory(page: page))['data'],
                 ),
             idOf: (item) => item['id'],
             onPageLoaded: _precacheImages,
@@ -411,11 +409,18 @@ class ClearAllDialog extends StatelessWidget {
     final themeProvider = Provider.of<ThemeProvider>(context);
 
     return Container(
-      padding: const EdgeInsets.all(16),
+      // Pastdan chiqadigan oyna tizim navigatsiya paneli ostidan boshlanadi,
+      // shuning uchun tugmalar uning ustiga tushib qolmasin.
+      padding: EdgeInsets.fromLTRB(
+        16,
+        16,
+        16,
+        16 + MediaQuery.of(context).viewPadding.bottom,
+      ),
       decoration: BoxDecoration(
-        color: themeProvider.cardColor,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-        border: Border.all(color: themeProvider.borderColor, width: 1),
+        gradient: GlassSurface.gradient,
+        borderRadius: GlassSurface.sheetBorderRadius,
+        border: GlassSurface.sheetBorder,
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,

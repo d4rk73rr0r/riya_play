@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:riya_play/services/api_service.dart';
+import 'package:riya_play/theme/glass.dart';
 import 'package:riya_play/theme_provider.dart';
 import 'package:intl/intl.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -62,13 +63,6 @@ class ActivateRiyaPlayTVScreenState extends State<ActivateRiyaPlayTVScreen> {
       context: context,
       builder:
           (context) => AlertDialog(
-            backgroundColor:
-                Provider.of<ThemeProvider>(context).isDarkMode
-                    ? const Color(0xFF1F2937)
-                    : Colors.white,
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12),
-            ),
             title: Text(
               "RiyaPlay TVni faollashtirish",
               style: TextStyle(
@@ -173,19 +167,11 @@ class ActivateRiyaPlayTVScreenState extends State<ActivateRiyaPlayTVScreen> {
           child: Container(
             width: MediaQuery.of(context).size.width * 0.9,
             height: MediaQuery.of(context).size.height * 0.8,
+            // Qolgan dialoglar bilan bir xil shisha yuza.
             decoration: BoxDecoration(
-              color:
-                  themeProvider.isDarkMode
-                      ? const Color(0xFF1F2937)
-                      : Colors.white,
-              borderRadius: BorderRadius.circular(20),
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.2),
-                  blurRadius: 10,
-                  offset: const Offset(0, 4),
-                ),
-              ],
+              gradient: GlassSurface.gradient,
+              borderRadius: GlassSurface.borderRadius,
+              border: GlassSurface.border,
             ),
             child: Column(
               children: [

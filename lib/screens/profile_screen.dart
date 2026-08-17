@@ -7,6 +7,7 @@ import 'package:riya_play/screens/profile/profile_details_screen.dart';
 import 'package:riya_play/screens/profile/devices_screen.dart';
 import 'package:riya_play/screens/profile/history_screen.dart';
 import 'package:riya_play/screens/download_screen.dart';
+import 'package:riya_play/theme/glass.dart';
 import 'package:riya_play/theme_provider.dart';
 import 'package:flutter_iconly/flutter_iconly.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -92,10 +93,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
           context: context,
           builder:
               (context) => AlertDialog(
-                backgroundColor: themeProvider.cardColor,
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
                 title: Text(
                   "Xato",
                   style: TextStyle(color: themeProvider.textColor),
@@ -496,11 +493,18 @@ class LogoutDialog extends StatelessWidget {
     final themeProvider = Provider.of<ThemeProvider>(context);
 
     return Container(
-      padding: const EdgeInsets.all(16),
+      // Pastdan chiqadigan oyna tizim navigatsiya paneli ostidan boshlanadi,
+      // shuning uchun tugmalar uning ustiga tushib qolmasin.
+      padding: EdgeInsets.fromLTRB(
+        16,
+        16,
+        16,
+        16 + MediaQuery.of(context).viewPadding.bottom,
+      ),
       decoration: BoxDecoration(
-        color: themeProvider.cardColor,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
-        border: Border.all(color: themeProvider.borderColor, width: 1),
+        gradient: GlassSurface.gradient,
+        borderRadius: GlassSurface.sheetBorderRadius,
+        border: GlassSurface.sheetBorder,
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,

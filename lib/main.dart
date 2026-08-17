@@ -15,6 +15,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_iconly/flutter_iconly.dart';
 // ignore: depend_on_referenced_packages
 import 'package:flutter_native_splash/flutter_native_splash.dart';
+import 'package:riya_play/theme/glass.dart';
 import 'package:riya_play/utils/app_logger.dart';
 import 'package:riya_play/utils/system_ui.dart';
 import 'package:riya_play/widgets/glass_bottom_bar.dart';
@@ -152,6 +153,10 @@ class _RiyaPlayAppState extends State<RiyaPlayApp> {
           labelLarge: const TextStyle(fontSize: 14.0, color: Colors.white),
         ),
       ),
+      // Barcha dialoglar va pastdan chiqadigan oynalar pastki menyu bilan bir
+      // xil shisha yuzada.
+      dialogTheme: GlassSurface.dialogTheme,
+      bottomSheetTheme: GlassSurface.bottomSheetTheme,
       iconTheme: const IconThemeData(color: Colors.white, size: 24.0),
       appBarTheme: AppBarTheme(
         titleTextStyle: GoogleFonts.poppins(

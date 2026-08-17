@@ -121,6 +121,55 @@ both being 47,297,998 bytes. The device's release install agrees
 "Republish with a correctly versioned APK" item is therefore **closed**, and
 the earlier note that both releases report `1.0.1 / 2002` was wrong.
 
+### Session of 2026-08-16, part 8 — every dialog on the same glass surface
+
+The glass recipe moved into `lib/theme/glass.dart` (`GlassSurface`) so the
+bottom menu and every dialog read from one place instead of drifting apart:
+dark scrim `0.70 → 0.58`, white hairline `0.18` at `0.8` px, radius 28. The
+values and the reasoning behind "dark, not light" live in that file's doc
+comment; `GlassBottomBar` now consumes them rather than hard-coding its own.
+
+**Dialogs go through the theme**, not per-call-site widgets:
+`MaterialApp.theme.dialogTheme = GlassSurface.dialogTheme`. Six sites were
+overriding `backgroundColor` / `shape` locally and would have ignored it — the
+overrides were removed so the theme wins:
+
+| File | what was removed |
+| --- | --- |
+| `screens/auth_screen.dart` | `shape` + `backgroundColor: Colors.black` |
+| `screens/profile_screen.dart` | `backgroundColor: cardColor` + `shape` |
+| `screens/profile/activate_tv_screen.dart` | theme-conditional `backgroundColor` + `shape` |
+| `services/update_service.dart` (×2) | `backgroundColor: cardColor` + `shape` |
+| `screens/profile/activate_tv_screen.dart` (raw `Dialog`) | opaque `Container` decoration → `GlassSurface` |
+
+Everything else (`video_launcher.dart` ×4, `films_full_screen.dart` ×3,
+`tv_channels_screen.dart`) set nothing and picked the theme up for free.
+
+**Bottom sheets were included too.** The five classes are literally named
+`LogoutDialog`, `ClearAllDialog` (×3) and `EditProfileDialog`, so they count as
+dialogs. `bottomSheetTheme` makes the sheet itself transparent and each widget's
+own `Container` now carries `GlassSurface.gradient` / `sheetBorderRadius` /
+`sheetBorder`.
+
+Their padding also gained `MediaQuery.viewPadding.bottom`: the sheets start
+below the system navigation bar, and with a transparent surface their buttons
+sat directly on top of the navigation keys.
+
+**Verified on device**: the "Davom ettirish" resume dialog, the update
+"Yangilanish tekshirilmoqda..." dialog, the Profile logout sheet and the
+Favourites "Hammasini o'chirmoqchimisiz?" sheet all render as glass with
+content visible behind them and buttons clear of the navigation bar. The other
+dialogs share the same theme path.
+
+**No blur here either**, for the same reason as the menu (part 7): a
+`BackdropFilter` keeps the raster pipeline awake. Dialogs are transient, so the
+cost would be bounded — but consistency with the menu is the point, and the
+scrim alone already reads as glass.
+
+**Note on `dart format`**: running it across `lib/` reformatted 14 files that
+had nothing to do with this change. Those were reverted with
+`git checkout --`. Format only the files you touched.
+
 ### Session of 2026-08-16, part 7 — blur re-measured, content runs behind the menu
 
 #### Blur re-measurement (the part-5 question, answered)
@@ -1595,6 +1644,7 @@ Modified:
 
 New:
 
+- `lib/theme/glass.dart` — `GlassSurface`: the shared glass scrim, hairline, radius, dialog and bottom-sheet themes.
 - `lib/utils/system_ui.dart` — `AppSystemUi`: the only place that changes system-bar mode.
 - `lib/widgets/glass_bottom_bar.dart` — the glass panel behind the bottom menu; `blur` off by measurement.
 - `lib/services/download_manager.dart` — the download queue.
@@ -1732,6 +1782,14 @@ New:
 - **Do not set `systemNavigationBarColor` to darken the navigation bar.** Under
   `SystemUiMode.edgeToEdge` the system ignores it — measured, pixel-identical
   with and without. `systemNavigationBarContrastEnforced: true` is what works.
+- **Do not hard-code glass colours.** `lib/theme/glass.dart` (`GlassSurface`) is
+  the single source for the scrim, the hairline and the radius; the bottom menu,
+  the dialog theme and the bottom sheets all read from it.
+- **Do not add `backgroundColor` / `shape` to an `AlertDialog`.** The app theme
+  supplies the glass surface; a local override silently opts that dialog out.
+  Six sites did exactly that and had to be stripped.
+- **Do not run `dart format lib/`.** It reformats dozens of untouched files and
+  buries the real diff. Format only the files you edited.
 - **Do not lower `blurSigma` hoping to make the blur cheap.** σ=10 measured
   *worse* than σ=18. The cost is the backdrop read, not the radius.
 - **Do not call `SystemChrome.setEnabledSystemUIMode` from a screen.** Go
