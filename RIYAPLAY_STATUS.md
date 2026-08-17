@@ -63,6 +63,90 @@ The session covered four areas, in order:
    wrong progress denominator, wrong sort order; plus the cards now start
    playback directly instead of opening the film page.
 
+### Session of 2026-08-17 — the release-build repeat, and navigation-bar insets
+
+Started from the previous "Next Recommended Step": repeat the watch-position
+reproduction on a **release** build. Two things had changed since that step was
+written, both verified before doing anything:
+
+- The device's release install was already `versionCode=2005 / versionName=1.0.4`
+  (installed 2026-08-17 13:48), i.e. `v1.0.4` was built and installed locally
+  after the part-4 work. It predates commit `161d193` (the glass dialogs), so the
+  tree was rebuilt anyway rather than trusting the installed binary.
+- The three fixes the test exists to exercise are all present in the working
+  tree: `video_helpers.dart` `dispose(forceDispose: true)` (Bug 17),
+  `_maybeSyncPosition` not stamping `_lastSyncAt` below `_minSavedSeconds`
+  (Bug 18), and `_savePlaybackPosition` without `mounted`/`_isDisposed` guards
+  (Bug 13).
+
+**Build the arm64 split, not the universal APK.** `flutter build apk --release`
+produces `versionCode = 5` (no ABI offset), which is *lower* than the installed
+`2005`, so `adb install -r` fails with `INSTALL_FAILED_VERSION_DOWNGRADE`. The
+command that works:
+
+```
+flutter build apk --release --split-per-abi --target-platform android-arm64
+adb install -r build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+```
+
+#### Results on `uz.mrlg.riyaplay` (release, 1.0.4 / 2005, built from `161d193`)
+
+| Test | Result |
+| --- | --- |
+| New film (Catalog → "Haydi", button read "Ko'rishni boshlash", i.e. no prior position) → internal player → ~90 s → **Android Back without pausing** | **PASS.** Back returned to the film page, no crash |
+| Continue-watching row after that | **PASS.** "Haydi" appears **first** with **01:29** — the exit write landed with the real position, not `00:00` and not a 30-s-stale value |
+| Tap that card | **PASS.** "01:29 dan davom ettirishni xohlaysizmi?" resume dialog, rendered on the glass surface |
+| 4 × (resume → ~25 s → Back), Java heap after each | 139 → 140 → 166 → **95 MB**. Bounded; GC reclaims it. The Bug 17 leak was ~155 MB *per session* and would have grown monotonically |
+| App state at the end | alive, focus back on `MainActivity` |
+
+**Server truth could not be read for this account.** The release package is not
+debuggable, so its `auth_token` is unreachable; the token that *is* readable
+(`run-as uz.mrlg.riyaplay.debug`) belongs to a **different account** — its
+`/v2/films/latest-viewed` never showed "Haydi" and did not change during the
+test. The verification above is therefore through the UI, which is itself
+server-rendered: the continue-watching row is built from the API response, so a
+card reading `01:29` *is* evidence the write reached the server.
+
+#### `android/app/local.properties` deleted
+
+An untracked `android/app/local.properties` contained a placeholder
+`flutter.sdk=C:\path\to\flutter` plus stale `minSdk/targetSdk/compileSdk` lines.
+Nothing reads it — `build.gradle.kts` reads `android/local.properties`, one
+directory up — so it was pure noise in `git status` and misleading to anyone
+opening it. Deleted at the owner's request; `git status` is now clean.
+
+#### Content ran under the system navigation bar on two screens
+
+Reported: on `FilmScreen` and `FilmsFullScreen` the last content sits under the
+navigation bar ("Olov pazanda"'s synopsis, and "Kalmar o'yini"'s **"Barcha
+qismlar"** button).
+
+Same cause as part 7's home/catalog/profile fix, one level down: the app runs
+`SystemUiMode.edgeToEdge`, both screens draw to the bottom of the window, and
+neither scrollable reserved the navigation-bar inset.
+
+| File | Change |
+| --- | --- |
+| `lib/screens/film_screen.dart` | `SingleChildScrollView.padding` bottom = `MediaQuery.viewPadding.bottom` |
+| `lib/screens/films_full_screen.dart` | grid padding `EdgeInsets.all(16)` → `fromLTRB(16, 16, 16, 16 + viewPadding.bottom)` |
+
+**A second defect surfaced while verifying it**: the episode strip on
+`FilmScreen` rendered `BOTTOM OVERFLOWED BY 8.0 PIXELS` over every card. The
+card is 100 px of thumbnail plus title (up to two lines) and duration inside a
+fixed **136 px** box. The height is now the single constant
+`_episodeCardHeight = 160`, shared by the card, the horizontal `ListView` that
+holds it and the skeleton loader (all three were hard-coding 136 separately),
+and the text block is wrapped in `Expanded` so a larger system font scale
+cannot overflow it either.
+
+**Verified on device** (debug build, so the overflow banner would still be
+visible if it were there): "Olov pazanda" scrolls to its last line clear of the
+navigation bar; "Kalmar o'yini" shows "Barcha qismlar" clear of it, with the
+strip's durations (`55:29`, `58:08`) now visible and **no** overflow banner;
+`FilmsFullScreen`'s grid ends with "9-qism 50:58" clear of the bar.
+
+`flutter analyze lib`: 5 pre-existing infos, the unchanged baseline.
+
 ### Session of 2026-08-16, part 2 — the install-permission flow, end to end
 
 The four install-flow scenarios that the previous session left unfinished were
@@ -1510,7 +1594,7 @@ verified on device.)
 | ~~Find out where `versionCode=2004` comes from~~ | — | `pubspec.yaml` | Medium | **DONE (2026-08-16)** | Flutter's `--split-per-abi` ABI offset (`arm64 = 2000 + N`). `pubspec.yaml` was always the only source; version is now `1.0.4+5` → arm64 `2005` |
 | **Publish `v1.0.4`** | Built and verified locally, not uploaded | — | Medium | Not started | Upload `app-<abi>-release.apk` from `build/app/outputs/flutter-apk/` to a `v1.0.4` release, then re-run the OTA check on a device. Note the binaries in that directory now also carry the part-4 performance work |
 | **Find the idle ~120 fps redraw on the home tab** | Measured, cause not isolated; the ring animation was ruled out | `lib/screens/index_screen.dart` | Medium | Not started | DevTools timeline on a profile build while the home tab sits untouched |
-| **Measure memory over navigation cycles** | Not covered by the audit | — | Medium | Not started | `dumpsys meminfo` across repeated Home → Catalog → FilmScreen → Player → Back cycles |
+| **Measure memory over navigation cycles** | Not covered by the audit | — | Medium | **Partly done (2026-08-17)** | The player half is measured on release: four play → Back cycles, Java heap 139 → 140 → 166 → 95 MB, bounded. Still unmeasured: Home → Catalog → FilmScreen cycles without playback, and TV channels |
 | **Re-measure segment concurrency at 48** | Raised from 24 by the owner's decision without a new measurement | `lib/services/download_service.dart` | Medium | Not started | Download one ~450 MB episode and compare throughput and stability against the recorded 24 → 9.11 MB/s effective |
 | **Run the install-flow tests on a release build** | Every part-2 result was measured on `uz.mrlg.riyaplay.debug` | — | Medium | Not started | Same four scenarios against `uz.mrlg.riyaplay` once a newer release exists to offer |
 | ~~Decide the release asset naming~~ | — | `lib/services/update_service.dart` | Medium | **Settled** | `app-<abi>-release.apk`, the default `flutter build apk --split-per-abi` output. The atom fallback now depends on this name — renaming assets breaks it, so keep it |
@@ -1519,7 +1603,7 @@ verified on device.)
 | Investigate debug-mode poster rendering | Affects development experience | `lib/widgets/poster_card.dart`, `lib/utils/image_cache_manager.dart` | Low | Not started | Compare `CachedNetworkImage` behaviour between debug and release |
 | ~~Route `film_screen` / `films_full_screen` playback through `VideoLauncher`~~ | Duplicated `_playVideo`, no flush wait, no refresh | `lib/screens/film_screen.dart`, `lib/screens/films_full_screen.dart`, `lib/utils/video_launcher.dart` | Medium | **DONE** | Both delegate to `VideoLauncher.playWithChooser`; verified on device |
 | Verify the `getFirstEpisode` fallback | The new branch only runs for a film whose payload has no `lastSeries`, which no tested film had | `lib/services/api/films_api.dart`, `lib/screens/film_screen.dart` | Low | Not started | Find such a film in the catalogue (or stub the field out in a debug build) and confirm the button plays instead of doing nothing |
-| Re-test the reported scenario on a **release** build | The user's release install (`uz.mrlg.riyaplay`, versionCode 2002, installed 18:21) predates the part-4 fixes; every part-4 measurement was made on `uz.mrlg.riyaplay.debug` | — | High | Not started | `flutter build apk --release`, install, repeat: new film → play → Back without pausing, and four play/Back cycles while watching `dumpsys meminfo` |
+| ~~Re-test the reported scenario on a **release** build~~ | Every part-4 measurement was made on `uz.mrlg.riyaplay.debug` | — | High | **DONE (2026-08-17)** | Rebuilt from `161d193` as an arm64 split (the universal APK is `versionCode 5` and cannot be installed over `2005`), installed, and both halves passed: new film → Back without pausing wrote `01:29`, and four play/Back cycles left the Java heap bounded (139 → 140 → 166 → 95 MB) |
 | Re-check TV channels after the disposal change | `tv_channels_screen` pushes the same player for live streams; the disposal path changed for it too, and it was not re-exercised end to end | `lib/screens/tv_channels_screen.dart` | Medium | Not started | Open a channel, watch, leave, repeat twice and check the heap |
 | Sessions shorter than 6 s are still not saved | `_minSavedSeconds = 5` is deliberate (an accidental open should not fill the row), but it does mean a very short first session leaves a `00:00` card | `lib/screens/video_player_screen.dart` | Low | By design | Revisit only if users complain about the empty card, not about the position |
 | Backport to `tplaytv` | That project writes the position only on exit/`WillPop`/`finished`, and its progress bars use the non-existent `film.playback_time` so they always read full | `tplaytv/lib/screens/video_player_screen.dart`, `tplaytv/lib/widgets/index/index_sections.dart`, `tplaytv/lib/screens/latestviewed_screen.dart` | Medium | Not started | Copy the 30 s periodic sync + pause write, and switch the denominator to the item's `duration` |
@@ -1617,8 +1701,8 @@ verified on device.)
 Modified:
 
 - `lib/main.dart` — `DownloadManager.instance.restore()` before `runApp`; OTA check in `MainScreen.initState`; 2026-08-13: global `routeObserver`.
-- `lib/screens/film_screen.dart` — cast strip + `_CastTile`, `ActorFilmsScreen` navigation, `episodeId` plumbing, server-only resume, status-bar scrim, dead `flexibleSpace` removed.
-- `lib/screens/films_full_screen.dart` — batch/season download, multi-select mode, `PopScope`, `episodeId` plumbing, server-only resume, `ApiErrorHandler`.
+- `lib/screens/film_screen.dart` — cast strip + `_CastTile`, `ActorFilmsScreen` navigation, `episodeId` plumbing, server-only resume, status-bar scrim, dead `flexibleSpace` removed; 2026-08-17: scroll padded by `viewPadding.bottom`, `_episodeCardHeight = 160` shared by card/strip/skeleton, card text in `Expanded`.
+- `lib/screens/films_full_screen.dart` — batch/season download, multi-select mode, `PopScope`, `episodeId` plumbing, server-only resume, `ApiErrorHandler`; 2026-08-17: grid padding gained `viewPadding.bottom`.
 - `lib/screens/index_screen.dart` — `_primeFromCache`, cache writes, continue-watching progress/colour fix, `VideoLauncher` tap; 2026-08-16 (part 4): `_wasOffline` guard, parallel `Future.wait` home load, `CircleProgressPainter` driven by `repaint:` inside a `RepaintBoundary`.
 - `lib/main.dart` — 2026-08-16 (part 4): `initialization()` no longer pads the splash with `Future.delayed`/`Future.doWhile`.
 - `android/app/build.gradle.kts` — 2026-08-16 (part 4): `profile` build type installs as `.debug` with the debug signing config.
@@ -1663,9 +1747,13 @@ New:
 > as deleted. That was pre-existing repository state, not something this
 > session caused. The checkpoint commit records all of it (286 files).
 >
-> `android/app/local.properties` is deliberately **left untracked** — it holds
+> `android/local.properties` is deliberately **left untracked** — it holds
 > a machine-specific `flutter.sdk` path. `android/key.properties` (signing
 > passwords) is covered by `android/.gitignore` and was never staged.
+>
+> A second, bogus `android/app/local.properties` (`flutter.sdk=C:\path\to\flutter`)
+> sat untracked in the tree until 2026-08-17. Nothing read it — the build reads
+> the one in `android/` — and it was deleted.
 >
 > Git identity was not configured in this environment; it was set
 > **repository-locally** to `MRLG <d4rk73rr0r@gmail.com>`, matching the
@@ -1811,6 +1899,31 @@ New:
   `showUnselectedLabels`.
 - **Do not raise the bottom-menu label size above 10 pt.** The glass panel is
   inset, so each slot is ~72 dp and "Bosh sahifa" is clipped at 11 pt.
+- **Do not `flutter build apk --release` and expect to install it over the
+  device's release build.** Without `--split-per-abi` there is no ABI offset, so
+  the APK is `versionCode 5` against the installed `2005` and `adb install -r`
+  refuses it. Build `--split-per-abi --target-platform android-arm64`.
+- **Do not read `latest-viewed` with the debug package's token to check the
+  release app.** They are different accounts — verified 2026-08-17: the film
+  watched on the release build never appeared in the debug account's list. The
+  release package is not debuggable, so its token cannot be read at all; verify
+  through the UI, which renders the server response anyway.
+- **Do not re-run the release-build watch-position reproduction.** Done on
+  2026-08-17 against `1.0.4 / 2005` built from `161d193`: exit write after Back
+  without pausing produced `01:29`, and four play/Back cycles left the Java heap
+  bounded (139 → 140 → 166 → 95 MB).
+- **Do not re-create `android/app/local.properties`.** It was a placeholder
+  (`flutter.sdk=C:\path\to\flutter`) that nothing reads — `build.gradle.kts`
+  reads `android/local.properties`, one directory up. Deleted 2026-08-17.
+- **Do not hard-code the episode-card height again.** `_episodeCardHeight` in
+  `film_screen.dart` is shared by the card, its horizontal `ListView` and the
+  skeleton loader; the three separate `136`s were what produced
+  `BOTTOM OVERFLOWED BY 8.0 PIXELS`.
+- **Any full-screen route needs its own bottom inset.** The app is
+  `edgeToEdge`, so a scrollable that ends at the window bottom ends *under* the
+  navigation bar. `FilmScreen` and `FilmsFullScreen` were fixed on 2026-08-17
+  the same way part 7 fixed home/catalog/profile: pad inside the scrollable with
+  `MediaQuery.viewPadding.bottom`.
 - **A chooser instead of the installer is a device quirk.** This device has
   `com.nh.aex/.InstallApk` (APKExtractor) registered for
   `ACTION_INSTALL_PACKAGE`, so Android shows `ResolverActivity` until a
@@ -1825,47 +1938,36 @@ defects found while running them are fixed and re-verified on device, and the
 published APKs turned out to be correctly versioned after all. Nothing in the
 update flow is known to be broken.
 
-**Nothing is blocking.** The OTA chain, the performance audit, the glass menu
-and the system-bar behaviour are all settled and measured; see parts 4–7.
+**Nothing is blocking.** The OTA chain, the performance audit, the glass menu,
+the system-bar behaviour and the release-build watch-position repeat are all
+settled and measured; see parts 4–8 and the 2026-08-17 section.
 
-The most valuable remaining item is the one the audit deferred: **repeat the
-watch-position reproduction on a release build** (below). After that, the open
-list is the Medium/Low set at the end of this document — publishing `v1.0.4`,
-re-measuring segment concurrency at 48, the `getFirstEpisode` fallback, the
-debug-only actor posters, `ApiErrorHandler` coverage, TV-channel playback after
-the disposal change, and the `tplaytv` backport. The carousel's
-ring animation was ruled out (disabling it left the frame count unchanged), so
-the next suspect is `carousel_slider`'s page view. Attach DevTools to a profile
-build, sit on the home tab, and read the timeline:
+**The release-build repeat is done** (2026-08-17): the exit write and the
+bounded heap were both confirmed on `uz.mrlg.riyaplay` 1.0.4 / 2005. Do not
+redo it.
 
-```bash
-flutter run --profile -d RZCX91W8YGP
-```
+The working tree now carries **uncommitted** changes: the navigation-bar insets
+on `film_screen.dart` / `films_full_screen.dart` and the `_episodeCardHeight`
+overflow fix. Committing them is the immediate next action.
 
-Everything else the audit found is fixed and re-measured; see part 4 above for
-the numbers and for the items deliberately left alone.
+After that, the open list is the Medium/Low set at the end of this document:
 
-**Also open: repeat the watch-position reproduction on a release build.**
-Everything in part 4 was measured on `uz.mrlg.riyaplay.debug`. The release
-install on the test device is now `uz.mrlg.riyaplay`, versionCode 2004, last
-updated 2026-08-16 02:56 — whether that build contains the part-4
-`safeDispose` fix has **not** been established, so rebuild from the current
-tree rather than trusting it:
+- **Publish `v1.0.4`.** Built locally (arm64 verified today); the release
+  binaries in `build/app/outputs/flutter-apk/` predate `161d193`, so rebuild all
+  three ABIs before uploading.
+- **Sweep the remaining full-screen routes for the same bottom inset.** Only
+  `FilmScreen` and `FilmsFullScreen` were reported and fixed; the other pushed
+  routes (`actor_films_screen`, `genres_films_screen`, `download_screen`, the
+  `profile/` screens, `latestviewed_screen`, `favorites_screen`) were **not**
+  checked. Scroll each to its end on a device and look for the last row sitting
+  under the navigation bar.
+- Re-measure segment concurrency at 48, the unexercised `getFirstEpisode`
+  fallback, the debug-only actor posters, `ApiErrorHandler` coverage, TV-channel
+  playback after the disposal change, an optional SHA-256 for the OTA download,
+  the install-flow repeat on a release build, and the `tplaytv` backport
+  (periodic sync + `duration` denominator).
 
-```
-flutter build apk --release
-adb install -r build/app/outputs/flutter-apk/app-release.apk
-```
-
-Then: a new film from Catalog → play → Back without pausing (expect a write
-during playback and one on exit, and `second.time` on the server), followed by
-four play → Back cycles while watching `dumpsys meminfo` (expect a bounded
-Java heap, no OOM).
-
-The remaining open items are all Medium/Low and independent: where
-`versionCode=2004` actually comes from, the install-flow repeat on a release
-build, an optional SHA-256 for the download, the unexercised
-`getFirstEpisode` fallback, the debug-only actor-poster rendering, wiring
-`ApiErrorHandler` into the screens that still interpolate raw `$e`, TV-channel
-playback after the disposal change, and the `tplaytv` backport (periodic sync
-+ `duration` denominator).
+The idle ~120 fps question is **not** on this list any more — part 6 found and
+fixed it (the banner ring's `AnimationController` ticking for off-screen tabs).
+Memory over *navigation* cycles (Home → Catalog → FilmScreen, no playback) is
+still unmeasured; the player cycles are covered.
