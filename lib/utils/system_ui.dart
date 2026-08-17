@@ -1,13 +1,11 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 /// Tizim panellarini boshqarishning yagona joyi.
 ///
-/// Ilova pastdagi tizim navigatsiya panelini yashiradi va o'zining shisha
-/// menyusini ekran chetigacha chizadi. Status bar esa qoladi — bosh sahifa va
-/// film sahifasi posterni uning ostiga chizishga mo'ljallangan.
+/// Ikkala panel ham **ko'rinib turadi**: ilova ularning ostiga chizadi
+/// (`edgeToEdge`), lekin ularni yashirmaydi. Shisha menyu `SafeArea` ichida
+/// bo'lgani uchun navigatsiya panelidan yuqorida turadi.
 ///
 /// Buni bir joyda ushlab turish shart: pleer to'liq ekranga o'tganda rejimni
 /// o'zgartiradi va chiqishda qaytaradi. Har bir ekran o'zicha
@@ -15,17 +13,11 @@ import 'package:flutter/services.dart';
 class AppSystemUi {
   AppSystemUi._();
 
-  /// Panel qayta yashirilgunicha ko'rinib turadigan vaqt.
-  static const Duration rehideDelay = Duration(seconds: 3);
-
-  static Timer? _rehideTimer;
-  static bool _callbackInstalled = false;
-
-  /// Status bar shaffof (ikonkalari oq), navigatsiya paneli ham shaffof.
+  /// Ikkala panel ham shaffof, ikonkalari oq.
   ///
   /// `systemNavigationBarContrastEnforced: false` shart: Android 10+ shaffof
-  /// panel ortiga o'zi yarim shaffof qora qatlam chizadi va shisha effekti
-  /// ko'rinmay qoladi.
+  /// panel ortiga o'zi yarim shaffof qora qatlam chizadi va ilovaning fonini
+  /// bo'lib yuboradi.
   static const SystemUiOverlayStyle overlayStyle = SystemUiOverlayStyle(
     statusBarColor: Colors.transparent,
     statusBarIconBrightness: Brightness.light,
@@ -36,36 +28,17 @@ class AppSystemUi {
     systemNavigationBarContrastEnforced: false,
   );
 
-  /// Ilovaning odatiy holati: pastki panel yashirin, status bar ko'rinadi.
-  ///
-  /// Foydalanuvchi pastdan yuqoriga surganda tizim panelni vaqtincha
-  /// ko'rsatadi; [_installChangeCallback] uni [rehideDelay] dan keyin yana
-  /// yashiradi.
+  /// Ilovaning odatiy holati: status bar ham, navigatsiya paneli ham ko'rinadi.
   static Future<void> apply() async {
-    _installChangeCallback();
-    _rehideTimer?.cancel();
-    await SystemChrome.setEnabledSystemUIMode(
-      SystemUiMode.manual,
-      overlays: const [SystemUiOverlay.top],
-    );
+    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     SystemChrome.setSystemUIOverlayStyle(overlayStyle);
   }
 
-  /// Pleer to'liq ekranda: ikkala panel ham yashirin.
+  /// Pleer to'liq ekranda: vaqtincha ikkala panel ham yashirinadi.
+  ///
+  /// Bu yagona istisno va u pleerdan chiqishda [apply] bilan qaytariladi —
+  /// video to'liq ekranda panellar ustida turishi kutilgan xatti-harakat.
   static Future<void> applyFullscreen() async {
-    _rehideTimer?.cancel();
     await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
-  }
-
-  static void _installChangeCallback() {
-    if (_callbackInstalled) return;
-    _callbackInstalled = true;
-    SystemChrome.setSystemUIChangeCallback((visible) async {
-      if (!visible) return;
-      // Panel foydalanuvchi surgani uchun chiqdi. Darrov yashirsak, uni
-      // umuman ishlatib bo'lmaydi — shuning uchun ko'rish uchun vaqt beriladi.
-      _rehideTimer?.cancel();
-      _rehideTimer = Timer(rehideDelay, apply);
-    });
   }
 }

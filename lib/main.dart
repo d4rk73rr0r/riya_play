@@ -36,8 +36,7 @@ void main() async {
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,
   ]);
-  // Tizim navigatsiya paneli yashiriladi — pastdagi shisha menyu ekran
-  // chetigacha chizilsin.
+  // Ikkala tizim paneli ham ko'rinadi; ilova ularning ostiga chizadi.
   await AppSystemUi.apply();
   // Yuklashlar ro'yxati ekran ochilishidan oldin tiklanadi, aks holda
   // "Yuklab olishlar" bir zumga bo'sh ko'rinib qoladi. O'lchangan: 68–93 ms,
@@ -236,8 +235,22 @@ class _MainScreenState extends State<MainScreen>
       body: TabBarView(
         controller: _tabController,
         physics: const BouncingScrollPhysics(),
-        children:
-            _screens.map((screen) => KeepAliveWrapper(child: screen)).toList(),
+        children: List.generate(_screens.length, (index) {
+          // Har bir tab `KeepAliveWrapper` ichida tirik qoladi, ya'ni undagi
+          // animatsiyalar ekranda ko'rinmasa ham ishlashda davom etardi. Bosh
+          // sahifadagi banner halqasi 6 soniyalik `AnimationController` bilan
+          // uzluksiz aylanadi, shuning uchun butun ilova boshqa tabda turganda
+          // ham 120 fps da qayta chizilardi (o'lchangan: Katalog tabida ham
+          // 3 soniyada ~363 kadr). `TickerMode` ko'rinmayotgan tablarning
+          // tikerlarini to'xtatadi — animatsiyalar o'chirilmaydi, faqat
+          // ko'rinmagan paytda pauza qilinadi.
+          return KeepAliveWrapper(
+            child: TickerMode(
+              enabled: _selectedIndex == index,
+              child: _screens[index],
+            ),
+          );
+        }),
       ),
       bottomNavigationBar: SafeArea(
         top: false,
@@ -261,17 +274,25 @@ class _MainScreenState extends State<MainScreen>
                       selectedItemColor: themeProvider.accentColor,
                       unselectedItemColor: themeProvider.subTextColor,
                       backgroundColor: Colors.transparent,
-                      // Shisha panel ekran chetlaridan ichkariroq turadi, shuning
-                      // uchun yorliqlar 12 pt da eng chetdagisi kesilib qolardi.
-                      selectedFontSize: 11,
-                      unselectedFontSize: 11,
+                      // Faqat tanlangan bo'limning nomi ko'rinadi; qolganlari
+                      // ikonkaning o'zi bilan qoladi. `BottomNavigationBar`
+                      // buni o'zi hal qiladi — tanlov o'zgarganda eskisi
+                      // darrov ikonkaga qaytadi.
+                      showSelectedLabels: true,
+                      showUnselectedLabels: false,
+                      // Shisha panel ekran chetlaridan ichkariroq turadi, ya'ni
+                      // har bir bo'limga ~72 dp joy tegadi. Eng uzun yorliq
+                      // ("Bosh sahifa") 11 pt da shundan chiqib ketib, panel
+                      // yumaloq chetida kesilardi.
+                      selectedFontSize: 10,
+                      unselectedFontSize: 10,
                       selectedLabelStyle: GoogleFonts.poppins(
-                        fontSize: 11,
+                        fontSize: 10,
                         fontWeight: FontWeight.w500,
                         color: themeProvider.accentColor,
                       ),
                       unselectedLabelStyle: GoogleFonts.poppins(
-                        fontSize: 11,
+                        fontSize: 10,
                         color: themeProvider.subTextColor,
                       ),
                       type: BottomNavigationBarType.fixed,

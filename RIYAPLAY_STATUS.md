@@ -121,6 +121,100 @@ both being 47,297,998 bytes. The device's release install agrees
 "Republish with a correctly versioned APK" item is therefore **closed**, and
 the earlier note that both releases report `1.0.1 / 2002` was wrong.
 
+### Session of 2026-08-16, part 6 — the idle 120 fps cause, navigation bar back, selected-only labels
+
+Three requested changes. All measured on the same profile build and device.
+
+#### 1. The idle ~120 fps redraw — cause found and fixed
+
+**Root cause: the banner carousel's progress-ring `AnimationController` never
+stops, and `KeepAliveWrapper` keeps it running for tabs that are off-screen.**
+
+`_BannerCarouselState` creates a 6-second `AnimationController` and calls
+`forward()`; `onPageChanged` then does `reset()` + `forward()`. Because
+`autoPlayInterval` is also 6 s, the controller finishes and is immediately
+restarted — it is running permanently. Any active `Ticker` makes
+`SchedulerBinding` request a frame every vsync, so the whole app renders at
+120 fps for as long as that controller lives.
+
+Two measurements pinned it down:
+
+| Condition | frames / 3 s |
+| --- | --- |
+| Home tab visible (before) | ~360 |
+| **Katalog tab visible, Home off-screen (before)** | **~363** |
+| Home tab, controller not started (ablation) | 37–100 |
+
+The second row is the defect: the Home tab is not even visible, yet the app
+still renders at full rate, because `MainScreen` wraps every tab in
+`KeepAliveWrapper` and nothing disables its tickers.
+
+**Fix**: wrap each `TabBarView` child in `TickerMode(enabled: _selectedIndex ==
+index)`. Animations are not removed or slowed — they are paused while their tab
+is off-screen and resume on return.
+
+| Condition | frames / 3 s | jank |
+| --- | --- | --- |
+| Home visible (after) | 350–362 | 0 |
+| **Katalog visible, Home off-screen (after)** | **0** | 0 |
+| Home again after returning | 350–364 | 0 |
+
+Home itself keeps rendering at 120 fps with **zero janky frames** (build p50
+1.0–1.3 ms, raster p50 3.5–3.8 ms against an 8.3 ms budget) — that part was
+already healthy and is deliberately unchanged: the ring is a real animation and
+should run while it is on screen. What is gone is the ~120 fps burned on a
+screen nobody is looking at.
+
+#### 2. The system navigation bar is visible again
+
+**Why it was hidden**: part 5 set `SystemUiMode.manual` with only
+`SystemUiOverlay.top`, plus a `setSystemUIChangeCallback` that re-hid the bar
+3 s after the user swiped it into view.
+
+**Change**: `AppSystemUi.apply()` now uses `SystemUiMode.edgeToEdge` — both
+bars visible and transparent, the app still drawing behind them. The re-hide
+callback and its timer are gone. The status bar is unaffected (same overlay
+style, same transparent theme colours), and the glass menu sits above the
+navigation bar because it is already inside a `SafeArea`.
+
+The player's fullscreen path still uses `applyFullscreen()`
+(`immersiveSticky`) while a video is genuinely fullscreen, and
+`VideoPlayerScreen.dispose()` restores through `AppSystemUi.apply()`, so
+leaving the player brings both bars back.
+
+#### 3. Glass menu: only the selected item shows its label
+
+`BottomNavigationBar` already models exactly this, so no custom widget was
+introduced: `showSelectedLabels: true` + `showUnselectedLabels: false`. The
+selected section renders icon over label, every other section renders the icon
+alone, and switching sections moves the label immediately.
+
+Label size dropped 11 pt → 10 pt at the same time. The glass panel is inset
+from the screen edges, so each of the five slots gets ~72 dp; "Bosh sahifa" at
+11 pt overflowed its slot and was clipped by the panel's rounded corner.
+
+**Files touched**: `lib/main.dart` (TickerMode, label flags, font size),
+`lib/utils/system_ui.dart` (edgeToEdge, re-hide logic removed).
+
+#### Tests performed
+
+| Test | Result |
+| --- | --- |
+| Home rendering at 120 Hz | 350–364 frames / 3 s, **0 janky frames** |
+| Off-screen tab rendering | **0 frames / 3 s** (was ~363) |
+| Returning to Home | animation resumes, 350–364 frames / 3 s, 0 jank |
+| Navigation bar on Home / Katalog / Profil | visible throughout |
+| Navigation bar after leaving the player | visible |
+| Selected section shows icon + label | yes (`Bosh sahifa`, `Katalog` both checked) |
+| Unselected sections show icon only | yes |
+| Rapid switching (15 taps across all five) | no stuck labels, no errors, ended clean |
+| Playback resume + position write | 22:57 → 23:16, card moved to the front |
+| `flutter analyze` | 5 pre-existing infos, the unchanged baseline |
+
+`GlassBottomBar.blur` is still `false`. It was not re-measured after the
+TickerMode fix — the blur cost was measured with the Home tab visible, which
+is exactly the case the fix does **not** change.
+
 ### Session of 2026-08-16, part 5 — glass bottom bar and a hidden navigation bar
 
 Two requests: make the bottom menu look like "liquid glass", and make the
@@ -1549,8 +1643,22 @@ New:
 - **Do not call `SystemChrome.setEnabledSystemUIMode` from a screen.** Go
   through `AppSystemUi`; the player and the shell used to fight over the
   system bars, which is what `lib/utils/system_ui.dart` exists to prevent.
-- **Do not restore `SystemUiOverlay.values` in the player's `dispose`.** That
-  brings the Android navigation bar back permanently on top of the glass menu.
+- **Do not hide the system navigation bar again.** Part 5 hid it; part 6 put it
+  back on request. The app default is `SystemUiMode.edgeToEdge` — both bars
+  visible and transparent. Only the player's fullscreen path may hide them.
+- **Do not re-investigate why the app renders when a tab is off-screen.**
+  Found and fixed: the banner ring's `AnimationController` runs permanently and
+  `KeepAliveWrapper` kept it ticking for hidden tabs. `TickerMode` in
+  `MainScreen`'s `TabBarView` children is the fix; off-screen tabs now measure
+  **0 frames / 3 s**.
+- **Do not "fix" the Home tab's 120 fps by stopping the ring animation.** It is
+  a visible animation on a visible screen and it costs 0 janky frames
+  (build p50 ~1.1 ms, raster p50 ~3.6 ms). Measured, not assumed.
+- **Do not build a custom widget for selected-only labels.**
+  `BottomNavigationBar` does it with `showSelectedLabels` /
+  `showUnselectedLabels`.
+- **Do not raise the bottom-menu label size above 10 pt.** The glass panel is
+  inset, so each slot is ~72 dp and "Bosh sahifa" is clipped at 11 pt.
 - **A chooser instead of the installer is a device quirk.** This device has
   `com.nh.aex/.InstallApk` (APKExtractor) registered for
   `ACTION_INSTALL_PACKAGE`, so Android shows `ResolverActivity` until a
@@ -1565,10 +1673,15 @@ defects found while running them are fixed and re-verified on device, and the
 published APKs turned out to be correctly versioned after all. Nothing in the
 update flow is known to be broken.
 
-**Find what keeps the home tab rendering at ~120 fps while idle.** This is the
-one measured performance question the audit could not answer — and it now
-blocks a product decision too: the glass menu's real blur is switched off
-because of it (part 5). The carousel's
+**Re-measure `GlassBottomBar.blur` now that off-screen tabs are quiet.** The
+blur was rejected in part 5 because it cost ~4 ms of raster on every frame and
+the app rendered constantly. Part 6 found and fixed the constant rendering for
+**off-screen** tabs, but the Home tab itself still runs at 120 fps while its
+carousel ring animates — which is the case the blur measurement was taken in.
+So the numbers probably have not moved; confirm before changing the flag.
+
+If the blur is still too expensive, the remaining lever is the ring animation
+itself: it is the only reason the Home tab never idles. The carousel's
 ring animation was ruled out (disabling it left the frame count unchanged), so
 the next suspect is `carousel_slider`'s page view. Attach DevTools to a profile
 build, sit on the home tab, and read the timeline:
