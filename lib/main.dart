@@ -29,6 +29,12 @@ import 'package:riya_play/widgets/glass_bottom_bar.dart';
 final RouteObserver<PageRoute<dynamic>> routeObserver =
     RouteObserver<PageRoute<dynamic>>();
 
+/// Shaffof shisha menyudagi ikonka va yorliqlar uchun soya.
+const List<Shadow> _navGlyphShadows = [
+  Shadow(color: Color(0xB3000000), blurRadius: 6),
+  Shadow(color: Color(0x80000000), blurRadius: 2),
+];
+
 void main() async {
   WidgetsBinding widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
   FlutterNativeSplash.preserve(widgetsBinding: widgetsBinding);
@@ -280,6 +286,16 @@ class _MainScreenState extends State<MainScreen>
                       // darrov ikonkaga qaytadi.
                       showSelectedLabels: true,
                       showUnselectedLabels: false,
+                      // Panel shaffof bo'lgani uchun menyu yorqin poster
+                      // ustiga ham tushadi. Soya ikonkalarni har qanday fonda
+                      // ajratib turadi — buning uchun panelni quyuqlashtirish
+                      // shart emas.
+                      selectedIconTheme: const IconThemeData(
+                        shadows: _navGlyphShadows,
+                      ),
+                      unselectedIconTheme: const IconThemeData(
+                        shadows: _navGlyphShadows,
+                      ),
                       // Shisha panel ekran chetlaridan ichkariroq turadi, ya'ni
                       // har bir bo'limga ~72 dp joy tegadi. Eng uzun yorliq
                       // ("Bosh sahifa") 11 pt da shundan chiqib ketib, panel
@@ -290,10 +306,12 @@ class _MainScreenState extends State<MainScreen>
                         fontSize: 10,
                         fontWeight: FontWeight.w500,
                         color: themeProvider.accentColor,
+                        shadows: _navGlyphShadows,
                       ),
                       unselectedLabelStyle: GoogleFonts.poppins(
                         fontSize: 10,
                         color: themeProvider.subTextColor,
+                        shadows: _navGlyphShadows,
                       ),
                       type: BottomNavigationBarType.fixed,
                       elevation: 0,

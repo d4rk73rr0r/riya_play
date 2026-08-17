@@ -707,10 +707,18 @@ class _IndexScreenContentState extends State<IndexScreenContent>
           ),
         ),
       ),
+      // `bottom: false` — kontent shisha menyu ortidan o'tib, tizim
+      // navigatsiya paneligacha ko'rinsin. O'rniga bir xil balandlikdagi
+      // to'ldirish ro'yxatning ichiga qo'yiladi, shunda oxirgi element
+      // baribir menyu ostida qolib ketmaydi.
       body: SafeArea(
+        bottom: false,
         child: RefreshIndicator(
           onRefresh: _refresh,
           child: SingleChildScrollView(
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.of(context).padding.bottom,
+            ),
             physics: const AlwaysScrollableScrollPhysics(),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,

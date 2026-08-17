@@ -143,9 +143,8 @@ class _CatalogScreenState extends State<CatalogScreen>
             _categoriesError = null;
             for (var category in _categories) {
               final categoryId = category['id'].toString();
-              _controllers[categoryId] =
-                  _createController(categoryId)
-                    ..init(loadImmediately: false);
+              _controllers[categoryId] = _createController(categoryId)
+                ..init(loadImmediately: false);
             }
           }
           _isInitialLoading = false;
@@ -205,7 +204,10 @@ class _CatalogScreenState extends State<CatalogScreen>
                   'https://placehold.co/320x180')
               : 'https://placehold.co/320x180';
       precacheImage(
-        CachedNetworkImageProvider(coverUrl, cacheManager: filmImagesCacheManager),
+        CachedNetworkImageProvider(
+          coverUrl,
+          cacheManager: filmImagesCacheManager,
+        ),
         context,
       );
     }
@@ -422,7 +424,11 @@ class _CatalogScreenState extends State<CatalogScreen>
                   ],
                 ),
       ),
+      // `bottom: false` — kontent shisha menyu ortidan o'tib, tizim
+      // navigatsiya paneligacha ko'rinsin. Ro'yxat oxiriga esa shuncha
+      // balandlikda bo'sh joy qo'shiladi.
       body: SafeArea(
+        bottom: false,
         child: Container(
           color: themeProvider.backgroundColor,
           child: RefreshIndicator(
@@ -556,8 +562,7 @@ class _CatalogScreenState extends State<CatalogScreen>
                                       ),
                                     ),
                                   ),
-                                  if (pagination.isLoading &&
-                                      films.isNotEmpty)
+                                  if (pagination.isLoading && films.isNotEmpty)
                                     SliverToBoxAdapter(
                                       child: Center(
                                         child: Padding(
@@ -568,8 +573,7 @@ class _CatalogScreenState extends State<CatalogScreen>
                                         ),
                                       ),
                                     ),
-                                  if (!pagination.hasMore &&
-                                      films.isNotEmpty)
+                                  if (!pagination.hasMore && films.isNotEmpty)
                                     SliverToBoxAdapter(
                                       child: Padding(
                                         padding: const EdgeInsets.all(16.0),
@@ -606,6 +610,13 @@ class _CatalogScreenState extends State<CatalogScreen>
                                         ),
                                       ),
                                     ),
+                                  // Shisha menyu ortidan chiqib ketish uchun.
+                                  SliverToBoxAdapter(
+                                    child: SizedBox(
+                                      height:
+                                          MediaQuery.of(context).padding.bottom,
+                                    ),
+                                  ),
                                 ],
                               );
                         }),

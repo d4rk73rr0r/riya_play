@@ -121,6 +121,69 @@ both being 47,297,998 bytes. The device's release install agrees
 "Republish with a correctly versioned APK" item is therefore **closed**, and
 the earlier note that both releases report `1.0.1 / 2002` was wrong.
 
+### Session of 2026-08-16, part 7 — blur re-measured, content runs behind the menu
+
+#### Blur re-measurement (the part-5 question, answered)
+
+Re-measured with `GlassBottomBar.blur = true` **after** the part-6 `TickerMode`
+fix, on the same device:
+
+| Condition | raster p50 | raster p90 | janky / 3 s | frames / 3 s |
+| --- | --- | --- | --- | --- |
+| Home idle, blur **off** | 3.5–3.8 ms | 4.7–5.2 ms | 0 | ~360 |
+| Home idle, blur **on** | 5.7–8.0 ms | 7.0–8.6 ms | **0–19** | ~350 |
+| Home scrolling, blur on | 2.4–5.5 ms | 3.6–6.4 ms | 0 | ~340 |
+| **Other tab idle, blur off** | — | — | 0 | **0** |
+| **Other tab idle, blur on** | 3.2–4.2 ms | 5.0–5.6 ms | 0 | **~363** |
+
+The last two rows are decisive and were not visible before: **`BackdropFilter`
+cancels the part-6 fix outright.** With the blur on, the app renders at ~120 fps
+on *every* tab again, including Sevimlilar, because the filter keeps the
+pipeline from ever going idle. Verified across five consecutive 3-second
+windows on a tab whose own content is static.
+
+So `blur` stays `false`, now for a second and stronger reason than the raster
+cost alone.
+
+#### Content now runs behind the menu, down to the navigation bar
+
+**Why it did not before**: `IndexScreenContent`, `CatalogScreen` and
+`ProfileScreen` each return their own `Scaffold` with `body: SafeArea(...)`.
+The outer `Scaffold` reports the glass menu's height as bottom padding, so
+those inner `SafeArea`s reserved exactly that strip — content stopped at the
+menu's top edge and the strip below it was flat scaffold colour.
+
+**Change**: `bottom: false` on those three `SafeArea`s, with the same height
+moved *inside* the scrollable (`SingleChildScrollView.padding` for Home and
+Profile, a trailing `SliverToBoxAdapter` spacer for the Catalog grid) so the
+last item is still reachable. Verified by scrolling each of the three to its
+end: Home's last row ("Dahshatli Hikoyalar"), Catalog's grid and Profile's
+"Chiqish" + version line all clear the menu.
+
+**Legibility follow-up.** With content behind it, the menu lands on bright
+posters too, and the original white 14 %/6 % gradient made white icons vanish.
+Measured by sampling the rendered pixel under the menu over a white poster:
+
+| Panel fill | pixel under the menu |
+| --- | --- |
+| white 0.14 → 0.06 | washed out, icons invisible |
+| black 0.38 → 0.28 | `#ABABAB` — still too light |
+| **black 0.70 → 0.58** | **`#5C5C5C`** — icons read on any background |
+
+The panel is still see-through (posters are clearly visible through it); it is
+simply a dark scrim rather than a light one. Icon and label shadows
+(`_navGlyphShadows`) were added along the way and kept, though on their own
+they were not enough. Chosen by the project owner over enabling the blur.
+
+**Files**: `lib/widgets/glass_bottom_bar.dart` (dark scrim),
+`lib/main.dart` (glyph shadows), `lib/screens/index_screen.dart`,
+`lib/screens/catalog_screen.dart`, `lib/screens/profile_screen.dart`
+(`SafeArea(bottom: false)` + in-scrollable padding).
+
+**Note**: judging this from a downscaled screenshot was misleading — the
+0.38 → 0.70 change looked like it had not applied at all. Sampling the actual
+pixel settled it. Do the same next time.
+
 ### Session of 2026-08-16, part 6 — the idle 120 fps cause, navigation bar back, selected-only labels
 
 Three requested changes. All measured on the same profile build and device.
@@ -1634,10 +1697,14 @@ New:
   0–2 % janky frames. There is nothing there.
 - **Do not remove the `RepaintBoundary` around the carousel ring.** Without it
   the per-frame build cost goes straight back from 1.2 ms to 3.2–3.6 ms.
-- **Do not turn on `GlassBottomBar.blur` "to see if it is fast enough".** It
-  was measured at two sigmas; both blow the 120 Hz budget on the home tab. The
-  numbers are in the widget's doc comment. Re-measure only after the idle
-  redraw is fixed.
+- **Do not turn on `GlassBottomBar.blur`.** Measured twice: at two sigmas in
+  part 5, and again in part 7 after the `TickerMode` fix. It costs ~2–4 ms of
+  raster on the home tab **and** it cancels the off-screen fix entirely — with
+  the blur on, every tab renders at ~120 fps again. The numbers are in the
+  widget's doc comment.
+- **Do not judge a colour/alpha change from a downscaled screenshot.** The
+  0.38 → 0.70 scrim change looked like a no-op until the rendered pixel was
+  sampled (`#ABABAB` → `#5C5C5C`).
 - **Do not lower `blurSigma` hoping to make the blur cheap.** σ=10 measured
   *worse* than σ=18. The cost is the backdrop read, not the radius.
 - **Do not call `SystemChrome.setEnabledSystemUIMode` from a screen.** Go
@@ -1673,15 +1740,15 @@ defects found while running them are fixed and re-verified on device, and the
 published APKs turned out to be correctly versioned after all. Nothing in the
 update flow is known to be broken.
 
-**Re-measure `GlassBottomBar.blur` now that off-screen tabs are quiet.** The
-blur was rejected in part 5 because it cost ~4 ms of raster on every frame and
-the app rendered constantly. Part 6 found and fixed the constant rendering for
-**off-screen** tabs, but the Home tab itself still runs at 120 fps while its
-carousel ring animates — which is the case the blur measurement was taken in.
-So the numbers probably have not moved; confirm before changing the flag.
+**Nothing is blocking.** The OTA chain, the performance audit, the glass menu
+and the system-bar behaviour are all settled and measured; see parts 4–7.
 
-If the blur is still too expensive, the remaining lever is the ring animation
-itself: it is the only reason the Home tab never idles. The carousel's
+The most valuable remaining item is the one the audit deferred: **repeat the
+watch-position reproduction on a release build** (below). After that, the open
+list is the Medium/Low set at the end of this document — publishing `v1.0.4`,
+re-measuring segment concurrency at 48, the `getFirstEpisode` fallback, the
+debug-only actor posters, `ApiErrorHandler` coverage, TV-channel playback after
+the disposal change, and the `tplaytv` backport. The carousel's
 ring animation was ruled out (disabling it left the frame count unchanged), so
 the next suspect is `carousel_slider`'s page view. Attach DevTools to a profile
 build, sit on the home tab, and read the timeline:

@@ -55,12 +55,18 @@ class GlassBottomBar extends StatelessWidget {
     final surface = DecoratedBox(
       decoration: BoxDecoration(
         borderRadius: radius,
+        // Qatlam quyuq, oq emas, va ancha to'yingan. Kontent panel ortidan
+        // o'tgani uchun menyu yorqin poster ustiga ham tushadi; oq qatlamda
+        // oq ikonkalar butunlay yo'qolardi, 0.38 da ham o'qib bo'lmasdi
+        // (qurilmada tekshirilgan: Katalogdagi oq fonli posterlar).
+        // 0.70/0.58 da kontent hamon ko'rinib turadi, lekin ikonkalar har
+        // qanday fonda ajralib turadi.
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
           colors: [
-            Colors.white.withValues(alpha: 0.14),
-            Colors.white.withValues(alpha: 0.06),
+            Colors.black.withValues(alpha: 0.70),
+            Colors.black.withValues(alpha: 0.58),
           ],
         ),
         border: Border.all(

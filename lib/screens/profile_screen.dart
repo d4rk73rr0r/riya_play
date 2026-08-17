@@ -178,11 +178,18 @@ class _ProfileScreenState extends State<ProfileScreen> {
           semanticsLabel: 'Profil',
         ),
       ),
+      // `bottom: false` — kontent shisha menyu ortidan o'tib, tizim
+      // navigatsiya paneligacha ko'rinsin. To'ldirish ro'yxat ichiga
+      // ko'chiriladi, aks holda oxirgi element menyu ostida qolib ketadi.
       body: SafeArea(
         top: true,
+        bottom: false,
         child: RefreshIndicator(
           onRefresh: _refresh,
           child: SingleChildScrollView(
+            padding: EdgeInsets.only(
+              bottom: MediaQuery.of(context).padding.bottom,
+            ),
             physics: const AlwaysScrollableScrollPhysics(),
             child: Padding(
               padding: EdgeInsets.symmetric(horizontal: padding, vertical: 16),
