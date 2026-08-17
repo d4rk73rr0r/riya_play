@@ -1609,7 +1609,7 @@ verified on device.)
 | ~~Find out where `versionCode=2004` comes from~~ | — | `pubspec.yaml` | Medium | **DONE (2026-08-16)** | Flutter's `--split-per-abi` ABI offset (`arm64 = 2000 + N`). `pubspec.yaml` was always the only source; version is now `1.0.4+5` → arm64 `2005` |
 | ~~Publish `v1.0.4`~~ | Built and verified locally, not uploaded | — | Medium | **DONE** | `v1.0.4` was published to `d4rk73rr0r/rplay-releases` on 2026-08-17 06:28 UTC with all three split APKs — the "not started" note above it was stale. Superseded by `v1.0.5` |
 | ~~Publish `v1.0.5`~~ | — | `pubspec.yaml` | Medium | **DONE (2026-08-17)** | Published to `d4rk73rr0r/rplay-releases` at 13:25 UTC with all three split APKs (`gh release create`), and the OTA check on the device's `1.0.4 / 2005` install answered "Yangi versiya mavjud — Versiya 1.0.5 · 45.2 MB" |
-| **The update dialog clips long release notes** | The `v1.0.5` body is longer than earlier ones and the dialog cut it mid-sentence ("Barcha dialoglar va pastki oynalar pastki…"); there is no visible scroll affordance | `lib/services/update_service.dart` | Low | Not started | Put the notes in a scrollable body, or cap them with a "batafsil" link. Not urgent — the version, size and buttons are all readable |
+| The update dialog's release notes look truncated | Long notes stop mid-sentence at the bottom of the box, with no visible scrollbar or fade | `lib/services/update_service.dart` | Low | **Not a defect** | The notes already sit in `ConstrainedBox(maxHeight: 160)` + `SingleChildScrollView` and scroll fine — confirmed by hand on the `v1.0.5` dialog. Only the affordance is missing; add a `Scrollbar` or a bottom fade if it is worth it |
 | **Find the idle ~120 fps redraw on the home tab** | Measured, cause not isolated; the ring animation was ruled out | `lib/screens/index_screen.dart` | Medium | Not started | DevTools timeline on a profile build while the home tab sits untouched |
 | **Measure memory over navigation cycles** | Not covered by the audit | — | Medium | **Partly done (2026-08-17)** | The player half is measured on release: four play → Back cycles, Java heap 139 → 140 → 166 → 95 MB, bounded. Still unmeasured: Home → Catalog → FilmScreen cycles without playback, and TV channels |
 | **Re-measure segment concurrency at 48** | Raised from 24 by the owner's decision without a new measurement | `lib/services/download_service.dart` | Medium | Not started | Download one ~450 MB episode and compare throughput and stability against the recorded 24 → 9.11 MB/s effective |
@@ -1916,6 +1916,10 @@ New:
   `showUnselectedLabels`.
 - **Do not raise the bottom-menu label size above 10 pt.** The glass panel is
   inset, so each slot is ~72 dp and "Bosh sahifa" is clipped at 11 pt.
+- **Do not "fix" the update dialog's release notes for being cut off.** They are
+  already inside a 160 px `ConstrainedBox` with a `SingleChildScrollView` and
+  scroll on touch — verified by hand on the `v1.0.5` dialog. What is missing is
+  only a visual affordance (scrollbar or fade), not the scrolling itself.
 - **Do not `flutter build apk --release` and expect to install it over the
   device's release build.** Without `--split-per-abi` there is no ABI offset, so
   the APK is `versionCode 5` against the installed `2005` and `adb install -r`
