@@ -147,6 +147,54 @@ strip's durations (`55:29`, `58:08`) now visible and **no** overflow banner;
 
 `flutter analyze lib`: 5 pre-existing infos, the unchanged baseline.
 
+### Session of 2026-08-18 — card captions and a 2x2 / 3x3 grid setting
+
+Three requests, all verified on the device (debug build) before committing.
+
+#### 1. Continue-watching cards on the home screen name what they are
+
+`LatestViewedItem` was a bare thumbnail with a time badge — nothing said which
+film it belonged to. The card is now a `Column`: 120 px of artwork, then the
+title and the year. For a series the episode is appended and **never** clipped:
+
+```
+Kalmar o'yini | 1-qism        Klon
+2021                          2021
+```
+
+The row is a `Row` of `Flexible(title)` + the episode label, so a long series
+name ellipsises while `| 3-qism` stays visible. A record counts as an episode
+when its own `name_uz` is non-empty and differs from the film's name — the
+latest-viewed payload already carries both (`latestViewedFields`).
+
+#### 2 and 3. Poster density is a setting: 2x2 or 3x3
+
+New `lib/utils/grid_density.dart` — `GridDensityProvider`, a `ChangeNotifier`
+persisted in `SharedPreferences` under `grid_columns`, allowed values `2` and
+`3`. It is loaded in `main()` **before** `runApp`, otherwise the first frame
+draws two columns and then jumps to three.
+
+| Surface | What reads it |
+| --- | --- |
+| Home: "Sizga tavsiya qilamiz", every category row | `itemWidth = (width - padding - gaps) / columns` |
+| Katalog grid | `crossAxisCount` |
+| Sevimlilar grid | `crossAxisCount` |
+| `PosterGridSkeleton` | `crossAxisCount` — otherwise the skeleton and the real grid disagree and the cards jump when loading ends |
+
+The picker lives in Profil ("Muqovalar ko'rinishi", with the current value on
+the right) and opens a glass bottom sheet with the two options, each drawn with
+a small live grid preview. Switching takes effect immediately — `Provider`
+rebuilds every listening screen, no restart.
+
+**Verified on device**: 2x2 → 3x3 put three posters in each home row, the
+Katalog and Sevimlilar grids both moved to three columns, and switching back to
+2x2 restored two. The continue-watching captions read as above.
+
+**Not caused by this change**: in the debug build the Katalog and Sevimlilar
+posters render as broken-image icons in *both* densities. That is the
+pre-existing debug-only poster defect already tracked in Remaining Bugs; the
+release build renders them.
+
 #### "Ko'rishni davom ettirish" no longer refetches the whole list
 
 Returning from the player used to run `_pagination.refresh()` in
@@ -1761,6 +1809,10 @@ Modified:
 - `android/app/build.gradle.kts` — 2026-08-16 (part 4): `profile` build type installs as `.debug` with the debug signing config.
 - `lib/screens/latestviewed_screen.dart` — correct film id, progress helper, tap → playback, long-press → film page; 2026-08-17: the playback path updates one card and moves it to the front instead of refetching the page.
 - `lib/utils/pagination_controller.dart` — 2026-08-17: `moveToFront(test)`.
+- `lib/utils/grid_density.dart` — **new** 2026-08-18: `GridDensityProvider` (2x2 / 3x3, persisted as `grid_columns`).
+- `lib/widgets/recommended_films_widget.dart`, `lib/widgets/poster_grid_skeleton.dart`, `lib/screens/catalog_screen.dart`, `lib/screens/favorites_screen.dart` — 2026-08-18: column count from `GridDensityProvider`.
+- `lib/screens/profile_screen.dart` — 2026-08-18: "Muqovalar ko'rinishi" row plus `GridDensityDialog`.
+- `lib/main.dart` — 2026-08-18: `GridDensityProvider` loaded before `runApp` and registered in `MultiProvider`.
 - `lib/services/update_service.dart` — 2026-08-17: `_ReleaseNotes` (scrollbar + bottom fade).
 - `lib/screens/video_player_screen.dart` — server-only watch position, real `startAt` field; 2026-08-13: working exit write, 30 s periodic sync, `pendingPositionFlush`.
 - `lib/utils/video_launcher.dart` — 2026-08-13: waits for the exit write before the caller reloads its list.
@@ -1958,6 +2010,11 @@ New:
   in a 160 px `ConstrainedBox` with a `SingleChildScrollView` and have always
   scrolled; as of 2026-08-17 they also carry a `Scrollbar` and a bottom fade
   (`_ReleaseNotes`), so nothing about them is broken.
+- **Do not hard-code `crossAxisCount: 2` (or `/ 2` for a row's item width)
+  again.** The column count is a user setting — `GridDensityProvider.columns`
+  in `lib/utils/grid_density.dart`, chosen in Profil as 2x2 / 3x3. The home
+  rows, the Katalog and Sevimlilar grids and `PosterGridSkeleton` all read it;
+  a hard-coded value there makes the skeleton and the grid disagree.
 - **Do not restore `_pagination.refresh()` in `LatestViewedScreen.didPopNext`
   for the playback path.** Refetching 20 entries to reflect one changed entry is
   exactly what was removed: the card now updates its own position and the screen

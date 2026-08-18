@@ -13,6 +13,7 @@ import 'package:flutter_iconly/flutter_iconly.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:riya_play/utils/grid_density.dart';
 import 'package:riya_play/utils/navigation.dart'; // createSlideRoute uchun import
 import 'package:riya_play/services/update_service.dart';
 
@@ -142,6 +143,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
               await _logout(context);
             },
           ),
+    );
+  }
+
+  void _showGridDensityDialog() {
+    showModalBottomSheet(
+      context: context,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (dialogContext) => const GridDensityDialog(),
     );
   }
 
@@ -295,6 +306,14 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                   _buildListTile(
                     context,
+                    icon: IconlyLight.category,
+                    title: "Muqovalar ko'rinishi",
+                    value:
+                        Provider.of<GridDensityProvider>(context).label,
+                    onTap: _showGridDensityDialog,
+                  ),
+                  _buildListTile(
+                    context,
                     icon: IconlyLight.download,
                     title: "Yangilanishni tekshirish",
                     onTap: () => UpdateService.checkManually(context),
@@ -402,6 +421,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     required IconData icon,
     required String title,
     required VoidCallback onTap,
+    // Sozlama qatorlari uchun: joriy qiymat o'ng tomonda ko'rinadi ("2x2").
+    String? value,
   }) {
     final themeProvider = Provider.of<ThemeProvider>(context);
     bool isPressed = false;
@@ -467,6 +488,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         semanticsLabel: title,
                       ),
                     ),
+                    if (value != null) ...[
+                      Text(
+                        value,
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          color: themeProvider.accentColor,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
                     Icon(
                       IconlyLight.arrowRight2,
                       color: themeProvider.subTextColor,
@@ -554,6 +586,176 @@ class LogoutDialog extends StatelessWidget {
             ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Muqovalar setkasini tanlash oynasi: 2x2 yoki 3x3.
+///
+/// Tanlov bosh sahifadagi qatorlarga, Katalog va Sevimlilar setkalariga
+/// birdek ta'sir qiladi, shuning uchun oynada shu ham yozib qo'yilgan.
+class GridDensityDialog extends StatelessWidget {
+  const GridDensityDialog({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final density = Provider.of<GridDensityProvider>(context);
+
+    return Container(
+      // Pastdan chiqadigan oyna tizim navigatsiya paneli ostidan boshlanadi.
+      padding: EdgeInsets.fromLTRB(
+        16,
+        16,
+        16,
+        16 + MediaQuery.of(context).viewPadding.bottom,
+      ),
+      decoration: BoxDecoration(
+        gradient: GlassSurface.gradient,
+        borderRadius: GlassSurface.sheetBorderRadius,
+        border: GlassSurface.sheetBorder,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            "Muqovalar ko'rinishi",
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: themeProvider.textColor,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            "Bosh sahifa, Katalog va Sevimlilar uchun",
+            style: TextStyle(fontSize: 13, color: themeProvider.subTextColor),
+          ),
+          const SizedBox(height: 16),
+          for (final columns in GridDensityProvider.allowedColumns)
+            _GridDensityOption(
+              columns: columns,
+              isSelected: density.columns == columns,
+              onTap: () {
+                density.setColumns(columns);
+                Navigator.pop(context);
+              },
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _GridDensityOption extends StatelessWidget {
+  final int columns;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  const _GridDensityOption({
+    required this.columns,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final themeProvider = Provider.of<ThemeProvider>(context);
+    final description =
+        columns == 2
+            ? "Kattaroq muqovalar, qatorda 2 ta"
+            : "Kichikroq muqovalar, qatorda 3 ta";
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(12),
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color:
+                  isSelected
+                      ? themeProvider.accentColor
+                      : themeProvider.borderColor,
+              width: isSelected ? 2 : 1,
+            ),
+          ),
+          child: Row(
+            children: [
+              // Tanlovni bir qarashda ko'rsatadigan kichik setka namunasi.
+              _GridPreview(columns: columns, color: themeProvider.textColor),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      "${columns}x$columns",
+                      style: TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: themeProvider.textColor,
+                      ),
+                    ),
+                    Text(
+                      description,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: themeProvider.subTextColor,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (isSelected)
+                Icon(Icons.check_circle, color: themeProvider.accentColor),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _GridPreview extends StatelessWidget {
+  final int columns;
+  final Color color;
+
+  const _GridPreview({required this.columns, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    const double size = 36;
+    const double gap = 3;
+    final cell = (size - gap * (columns - 1)) / columns;
+
+    return SizedBox(
+      width: size,
+      height: size,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: List.generate(
+          columns,
+          (_) => Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: List.generate(
+              columns,
+              (_) => Container(
+                width: cell,
+                height: cell,
+                decoration: BoxDecoration(
+                  color: color.withOpacity(0.55),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }

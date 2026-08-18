@@ -17,6 +17,7 @@ import 'package:flutter_iconly/flutter_iconly.dart';
 import 'package:flutter_native_splash/flutter_native_splash.dart';
 import 'package:riya_play/theme/glass.dart';
 import 'package:riya_play/utils/app_logger.dart';
+import 'package:riya_play/utils/grid_density.dart';
 import 'package:riya_play/utils/system_ui.dart';
 import 'package:riya_play/widgets/glass_bottom_bar.dart';
 
@@ -50,9 +51,16 @@ void main() async {
   // va uni kutmaslik birinchi kadr vaqtini o'zgartirmadi — shuning uchun
   // tartib ataylab shunday qoldirildi.
   await DownloadManager.instance.restore();
+  // Setka zichligi birinchi kadrdan oldin o'qiladi: aks holda bosh sahifa
+  // 2 ustunda chizilib, keyin 3 ga sakraydi.
+  final gridDensity = GridDensityProvider();
+  await gridDensity.load();
   runApp(
     MultiProvider(
-      providers: [ChangeNotifierProvider(create: (_) => ThemeProvider())],
+      providers: [
+        ChangeNotifierProvider(create: (_) => ThemeProvider()),
+        ChangeNotifierProvider.value(value: gridDensity),
+      ],
       child: const RiyaPlayApp(),
     ),
   );

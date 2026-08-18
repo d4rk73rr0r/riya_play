@@ -6,6 +6,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:riya_play/theme/glass.dart';
 import 'package:riya_play/theme_provider.dart';
 import 'package:flutter_iconly/flutter_iconly.dart';
+import 'package:riya_play/utils/grid_density.dart';
 import 'package:riya_play/utils/navigation.dart'; // createSlideRoute uchun import
 import 'package:riya_play/utils/pagination_controller.dart';
 import 'package:riya_play/utils/image_cache_manager.dart';
@@ -235,8 +236,10 @@ class ContentWidget extends StatelessWidget {
         SliverPadding(
           padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
           sliver: SliverGrid(
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2,
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              // Ustunlar soni Profil bo'limidagi 2x2 / 3x3 sozlamasidan.
+              crossAxisCount:
+                  Provider.of<GridDensityProvider>(context).columns,
               crossAxisSpacing: 12,
               mainAxisSpacing: 12,
               childAspectRatio: 0.65,

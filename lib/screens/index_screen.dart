@@ -19,6 +19,7 @@ import 'package:riya_play/screens/categories_screen.dart';
 import 'package:riya_play/utils/navigation.dart';
 import 'package:riya_play/utils/image_cache_manager.dart';
 import 'package:riya_play/utils/app_logger.dart';
+import 'package:riya_play/utils/grid_density.dart';
 import 'package:riya_play/main.dart' show MainScreen, routeObserver;
 import 'package:riya_play/services/cache_service.dart';
 import 'package:riya_play/utils/latest_viewed.dart';
@@ -1109,7 +1110,8 @@ class LatestViewedSection extends StatelessWidget {
             ],
           ),
           SizedBox(
-            height: 120,
+            // 120 px muqova + nomi va yili uchun qo'shimcha joy.
+            height: 120 + _latestViewedCaptionHeight,
             child:
                 isLoading
                     ? const Center(child: CircularProgressIndicator())
@@ -1128,6 +1130,9 @@ class LatestViewedSection extends StatelessWidget {
     );
   }
 }
+
+/// Muqova ostidagi nom va yil uchun ajratilgan balandlik.
+const double _latestViewedCaptionHeight = 40;
 
 // Latest Viewed Item
 class LatestViewedItem extends StatelessWidget {
@@ -1156,6 +1161,14 @@ class LatestViewedItem extends StatelessWidget {
     final viewedTime = second['time'] ?? 0;
     final double progress = latestViewedProgress(item);
     final viewedTimeString = formatWatchedTime(viewedTime);
+    final themeProvider = Provider.of<ThemeProvider>(context);
+
+    final filmName = (film['name_uz'] ?? film['name_ru'] ?? 'Noma’lum').toString();
+    final year = film['year']?.toString() ?? '';
+    // Seriallar uchun yozuvning o'z nomi qism nomi bo'ladi ("3-qism"), film
+    // uchun esa u film nomining o'zi yoki bo'sh keladi.
+    final episodeName = (item['name_uz'] ?? '').toString().trim();
+    final isEpisode = episodeName.isNotEmpty && episodeName != filmName;
 
     return GestureDetector(
       // Film sahifasini ochish o'rniga to'g'ridan-to'g'ri o'ynatamiz:
@@ -1170,58 +1183,110 @@ class LatestViewedItem extends StatelessWidget {
       child: Container(
         width: 170,
         margin: const EdgeInsets.only(right: 10),
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(8),
-          image: DecorationImage(
-            image: CachedNetworkImageProvider(
-              imageUrl,
-              cacheManager: filmImagesCacheManager,
-              // TUZATILISHGA MUHTOJ: errorListener faqat rasm yuklash xatolarini tutadi, UI errorWidget emas!
-            ),
-            fit: BoxFit.cover,
-          ),
-        ),
-        child: Stack(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Positioned(
-              bottom: 8,
-              right: 8,
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
+            Container(
+              height: 120,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                image: DecorationImage(
+                  image: CachedNetworkImageProvider(
+                    imageUrl,
+                    cacheManager: filmImagesCacheManager,
+                    // TUZATILISHGA MUHTOJ: errorListener faqat rasm yuklash xatolarini tutadi, UI errorWidget emas!
+                  ),
+                  fit: BoxFit.cover,
+                ),
+              ),
+              child: Stack(
                 children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 6,
-                      vertical: 2,
+                  Positioned(
+                    bottom: 8,
+                    right: 8,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.withOpacity(0.7),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            viewedTimeString,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 10,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        SizedBox(
+                          width: 154,
+                          child: LinearProgressIndicator(
+                            value: progress,
+                            backgroundColor: Colors.grey[400],
+                            // "So'nggi ko'rilganlar" ekrani bilan bir xil rang.
+                            valueColor: AlwaysStoppedAnimation<Color>(
+                              themeProvider.accentColor,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                    decoration: BoxDecoration(
-                      color: Colors.grey.withOpacity(0.7),
-                      borderRadius: BorderRadius.circular(4),
-                    ),
-                    child: Text(
-                      viewedTimeString,
-                      style: const TextStyle(
-                        color: Colors.white,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 6),
+            // Muqovaning o'zi qaysi film ekanini aytmaydi — nomi ostida
+            // yoziladi. Serial bo'lsa nomi qisqartiriladi, qism raqami esa
+            // doim ko'rinib turadi: "Kalmar o'yini | 3-qism".
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          filmName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: themeProvider.textColor,
+                          ),
+                        ),
+                      ),
+                      if (isEpisode)
+                        Text(
+                          " | $episodeName",
+                          maxLines: 1,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                            color: themeProvider.textColor,
+                          ),
+                        ),
+                    ],
+                  ),
+                  if (year.isNotEmpty)
+                    Text(
+                      year,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
                         fontSize: 10,
-                        fontWeight: FontWeight.bold,
+                        color: themeProvider.subTextColor,
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 4),
-                  SizedBox(
-                    width: 160,
-                    child: LinearProgressIndicator(
-                      value: progress,
-                      backgroundColor: Colors.grey[400],
-                      // "So'nggi ko'rilganlar" ekrani bilan bir xil rang.
-                      valueColor: AlwaysStoppedAnimation<Color>(
-                        Provider.of<ThemeProvider>(
-                          context,
-                          listen: false,
-                        ).accentColor,
-                      ),
-                    ),
-                  ),
                 ],
               ),
             ),
@@ -1441,7 +1506,12 @@ class CategorySection extends StatelessWidget {
     final screenWidth = MediaQuery.of(context).size.width;
     const horizontalPadding = 16.0 * 2;
     const itemMargin = 12.0;
-    final itemWidth = (screenWidth - horizontalPadding - itemMargin) / 2;
+    // Nechta muqova bir ekranga sig'ishi Profil bo'limidagi sozlamadan
+    // keladi (2x2 yoki 3x3).
+    final columns = Provider.of<GridDensityProvider>(context).columns;
+    final itemWidth =
+        (screenWidth - horizontalPadding - itemMargin * (columns - 1)) /
+        columns;
     final itemHeight = itemWidth * 1.5;
     final sectionHeight = itemHeight + 40 + 8;
 

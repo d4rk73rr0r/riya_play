@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:provider/provider.dart';
+import 'package:riya_play/utils/grid_density.dart';
 import 'package:riya_play/utils/image_cache_manager.dart';
 import 'package:riya_play/utils/app_logger.dart';
 
@@ -28,8 +30,12 @@ class RecommendedFilmsWidget extends StatelessWidget {
     // Padding (16 + 16) va margin (12) ni hisobga olamiz
     const horizontalPadding = 16.0 * 2; // Ikki tarafdan padding
     const itemMargin = 12.0; // Kartalar orasidagi bo'shliq
-    // Har bir kartaning kengligi: (ekran kengligi - padding - margin) / 2
-    final itemWidth = (screenWidth - horizontalPadding - itemMargin) / 2;
+    // Ekranga nechta muqova sig'ishi Profil bo'limidagi sozlamadan keladi.
+    final columns = Provider.of<GridDensityProvider>(context).columns;
+    // Har bir kartaning kengligi: (ekran kengligi - padding - oraliqlar) / N
+    final itemWidth =
+        (screenWidth - horizontalPadding - itemMargin * (columns - 1)) /
+        columns;
     // Balandlikni responsiv qilish uchun 3:2 nisbatidan foydalanamiz
     final itemHeight = itemWidth * 1.5;
     // Umumiy bo'lim balandligi: rasm balandligi + matnlar + bo'shliqlar

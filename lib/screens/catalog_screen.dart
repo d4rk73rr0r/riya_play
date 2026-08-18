@@ -7,6 +7,7 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:riya_play/theme_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_iconly/flutter_iconly.dart';
+import 'package:riya_play/utils/grid_density.dart';
 import 'package:riya_play/utils/navigation.dart';
 import 'package:riya_play/utils/pagination_controller.dart';
 import 'package:riya_play/widgets/poster_card.dart';
@@ -533,8 +534,13 @@ class _CatalogScreenState extends State<CatalogScreen>
                                     ),
                                     sliver: SliverGrid(
                                       gridDelegate:
-                                          const SliverGridDelegateWithFixedCrossAxisCount(
-                                            crossAxisCount: 2,
+                                          SliverGridDelegateWithFixedCrossAxisCount(
+                                            // Ustunlar soni Profil bo'limidagi
+                                            // 2x2 / 3x3 sozlamasidan keladi.
+                                            crossAxisCount:
+                                                Provider.of<
+                                                  GridDensityProvider
+                                                >(context).columns,
                                             crossAxisSpacing: AppSpacing.md,
                                             mainAxisSpacing: AppSpacing.md,
                                             childAspectRatio: 0.65,
