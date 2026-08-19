@@ -446,7 +446,11 @@ class _IndexScreenContentState extends State<IndexScreenContent>
         onSuccess(data);
       }
     } catch (e, stackTrace) {
-      onError(ApiErrorHandler.handle(e).userMessage, null);
+      // Status kodi ham uzatiladi: `ServerErrorPage` 401/403 da "Chiqish"
+      // tugmasini ko'rsatadi, aks holda muddati tugagan sessiya "Kutilmagan
+      // xatolik" bo'lib qolib, foydalanuvchida chiqish yo'li qolmaydi.
+      final info = ApiErrorHandler.handle(e);
+      onError(info.userMessage, info.statusCode);
       appLogger.d('$errorMessage xatosi: $e\nStackTrace: $stackTrace');
     }
   }

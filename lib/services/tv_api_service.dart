@@ -1,3 +1,4 @@
+import 'package:riya_play/services/error_handler.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:riya_play/utils/app_logger.dart';
@@ -76,7 +77,7 @@ class TVApiService {
     final response = await _sendRequest(url: url, source: source);
 
     if (response['success'] == false) {
-      throw Exception(response['error'] ?? "Kategoriyalar yuklanmadi");
+      throw ApiErrorHandler.fromResponse(response, "Kategoriyalar yuklanmadi");
     }
 
     return response['categories'] as List<dynamic>;
@@ -106,7 +107,7 @@ class TVApiService {
           final response = await _sendRequest(url: url, source: source);
 
           if (response['success'] == false) {
-            throw Exception(response['error'] ?? "Kanallar yuklanmadi");
+            throw ApiErrorHandler.fromResponse(response, "Kanallar yuklanmadi");
           }
 
           final channels =
@@ -159,7 +160,7 @@ class TVApiService {
     final response = await _sendRequest(url: url, source: source);
 
     if (response['success'] == false) {
-      throw Exception(response['error'] ?? "Kanallar yuklanmadi");
+      throw ApiErrorHandler.fromResponse(response, "Kanallar yuklanmadi");
     }
 
     if (source == "BizTV") {
@@ -198,7 +199,7 @@ class TVApiService {
     final response = await _sendRequest(url: url, source: source);
 
     if (response['success'] == false) {
-      throw Exception(response['error'] ?? "Kanal detallari yuklanmadi");
+      throw ApiErrorHandler.fromResponse(response, "Kanal detallari yuklanmadi");
     }
 
     return response;

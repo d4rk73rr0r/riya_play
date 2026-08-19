@@ -1,3 +1,4 @@
+import 'package:riya_play/services/error_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'api_client.dart';
 
@@ -55,7 +56,7 @@ class UserApi {
     );
 
     if (response['success'] == false) {
-      throw Exception(response['error'] ?? "Profil ma'lumotlari yuklanmadi");
+      throw ApiErrorHandler.fromResponse(response, "Profil ma'lumotlari yuklanmadi");
     }
     return response;
   }

@@ -116,6 +116,26 @@ class ApiErrorHandler {
     );
   }
 
+  /// Classifies a `sendRequest` failure map, keeping its status code.
+  ///
+  /// Several API methods turn `success: false` into a thrown exception. Doing
+  /// that with a bare `Exception(response['error'])` throws the status code
+  /// away, so an expired session reached the user as "Kutilmagan xatolik yuz
+  /// berdi" with no hint to log in again — observed on a release build whose
+  /// restored `auth_token` answered 401. Throwing the [ErrorInfo] instead
+  /// keeps the code: [handle] returns an [ErrorInfo] unchanged.
+  static ErrorInfo fromResponse(dynamic response, String fallback) {
+    final statusCode =
+        response is Map ? response['statusCode'] as int? : null;
+    if (statusCode != null) return fromStatus(statusCode);
+    return ErrorInfo(
+      type: ErrorType.unknown,
+      message: response is Map ? '${response['error']}' : '$response',
+      userMessage: fallback,
+      canRetry: true,
+    );
+  }
+
   /// Classifies a bare status code.
   ///
   /// `sendRequest` never throws — it returns `success: false` plus a

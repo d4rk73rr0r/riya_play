@@ -1,3 +1,4 @@
+import 'package:riya_play/services/error_handler.dart';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -60,7 +61,7 @@ class FilmsApi {
     );
 
     if (response['success'] == false) {
-      throw Exception(response['error'] ?? "Film ma'lumotlari yuklanmadi");
+      throw ApiErrorHandler.fromResponse(response, "Film ma'lumotlari yuklanmadi");
     }
     return response;
   }
@@ -308,7 +309,7 @@ class FilmsApi {
     );
 
     if (response['success'] == false) {
-      throw Exception(response['error'] ?? "So‘ngi ko‘rilganlar yuklanmadi");
+      throw ApiErrorHandler.fromResponse(response, "So‘ngi ko‘rilganlar yuklanmadi");
     }
 
     return {
@@ -392,7 +393,7 @@ class FilmsApi {
     );
 
     if (response['success'] == false) {
-      throw Exception(response['error'] ?? "Ko'rishlar tarixi yuklanmadi");
+      throw ApiErrorHandler.fromResponse(response, "Ko'rishlar tarixi yuklanmadi");
     }
     return {'data': response['data'] ?? [], 'meta': response['_meta'] ?? {}};
   }
