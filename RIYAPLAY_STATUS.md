@@ -264,6 +264,87 @@ queue-rendering question.
 
 `flutter analyze lib`: 5 pre-existing infos, the unchanged baseline.
 
+### Session of 2026-08-19, part 5 — v1.0.8 froze on the splash screen
+
+Reported after the release went out: the published v1.0.8 never got past the
+splash. Reproduced immediately on a release build installed from this tree, and
+it is the first defect in this project that **only** a release APK can show.
+
+#### The cause
+
+`res/drawable/ic_notification.xml` is named nowhere except a Dart string, the
+one passed to `AndroidInitializationSettings`. The release build runs
+`isShrinkResources = true`, the resource shrinker sees no Java, Kotlin or XML
+reference, and removes it. `flutter_local_notifications` then fails:
+
+```
+E flutter : Unhandled Exception: PlatformException(invalid_icon,
+            The resource ic_notification could not be found. …)
+E flutter : #3  NotificationService.init (…/notification_service.dart:43)
+E flutter : #4  main (…/main.dart:65)
+```
+
+`NotificationService.init` is **awaited in `main()` before `runApp`**, so the
+unhandled exception meant the first frame was never drawn and
+`FlutterNativeSplash.remove()` — which lives in `_RiyaPlayAppState` — never ran.
+The native splash therefore stayed up forever. `SurfaceFlinger` was still
+compositing `Splash Screen uz.mrlg.riyaplay` a full minute after launch.
+
+Debug builds do not shrink resources, which is why every test in parts 1–4
+passed. This is the same shape as the `assert`-only poster bug from part 3: a
+release-mode-only transform, invisible to `flutter analyze` and to any debug run.
+
+#### The fix — two halves
+
+| File | Change |
+| --- | --- |
+| `android/app/src/main/res/raw/keep.xml` | **new** — `tools:keep="@drawable/ic_notification"` pins the drawable through the shrinker |
+| `lib/main.dart` | the whole notification block is wrapped, so no plugin failure on that path can hold the splash again |
+
+The guard matters more than the pin. Anything awaited before `runApp` that
+throws bricks the app completely, and a missing notification channel is a far
+smaller loss than a blank screen — the catalogue, player and downloads do not
+depend on it.
+
+#### A second defect, found while verifying the first
+
+With the splash gone, the app landed on `ServerErrorPage` reading
+"Kutilmagan xatolik yuz berdi" with no way forward. The release install's
+`auth_token` (restored onto a fresh install by Android auto-backup) was stale
+and the API answered **401** — but the user could not tell, and the page's
+`Chiqish` button only appears for 401/403.
+
+Eight API methods were turning a `success: false` map into
+`throw Exception(response['error'])`, which discards `statusCode`. They now
+throw `ApiErrorHandler.fromResponse`, and `index_screen._fetchData` passes the
+recovered status to `setGlobalError` instead of a hardcoded `null`.
+
+Diagnosing it needed instrumentation: `appLogger` is `Level.nothing` under
+`kReleaseMode`, so a temporary `debugPrint` was added, read
+(`DIAG throw So'ngi ko'rilganlar…: Exception: Xatolik: 401`) and removed.
+
+#### Verified on device (release build, arm64, SM-A556E)
+
+| Test | Result |
+| --- | --- |
+| Cold start | **PASS.** Login screen in ~7 s, **zero** `E/flutter` lines |
+| Splash | **PASS.** Removed on the first frame; no lingering `Splash Screen` layer |
+| `ic_notification` in the APK | **PASS.** Present in the shrunk resource table |
+| Stale session | **PASS.** "Xato kodi: 401" with `Chiqish`, which recovers to the login screen |
+
+**Not verified: the catalogue home itself.** Reaching it needs a valid session,
+and logging in requires the owner's phone number and SMS code.
+
+#### Republished without a version bump, at the owner's instruction
+
+`v1.0.8` keeps `1.0.8+9` → `1009 / 2009 / 4009`; all three assets were replaced
+with `gh release upload --clobber` at 15:03 UTC. The arm64 asset's digest went
+`88fcbd50…55a9` → `1caf6985…6c6b`, matching the local `sha256sum`.
+
+**Consequence to remember: a device already carrying the broken v1.0.8 will not
+be offered this build.** The OTA check compares versions, and the version did
+not change. Those installs need a manual reinstall, or a `v1.0.9` bump.
+
 ### Session of 2026-08-19, part 4 — the six remaining Medium/Low items
 
 Every open item on the Medium/Low list except the release-build repeats was
@@ -2586,6 +2667,27 @@ New:
   to **PNG** while keeping the original extension, so every JPEG poster would be
   stored twice and the resized copy would be an order of magnitude larger. The
   parameters were inert in release, so removing them costs nothing.
+- **Do not let anything awaited before `runApp` throw.** `main()` runs
+  `DownloadManager.restore()`, `GridDensityProvider.load()` and the notification
+  init before the first frame, and `FlutterNativeSplash.remove()` only runs from
+  `_RiyaPlayAppState`. An unhandled exception anywhere in that chain leaves the
+  native splash on screen forever with no error and no crash — exactly what
+  shipped in v1.0.8.
+- **Do not assume a Dart-only resource survives the release build.**
+  `isShrinkResources = true` deleted `res/drawable/ic_notification.xml` because
+  it is named only in a Dart string. `android/app/src/main/res/raw/keep.xml`
+  pins it; anything else referenced solely from Dart needs the same treatment.
+- **Do not test a release-mode transform with a debug build.** Two defects in
+  one day were invisible in debug: the `assert` behind the broken posters
+  (part 3) and the resource shrinker behind the splash freeze (part 5). Any
+  change touching plugins, resources or startup needs one release run.
+- **Do not `throw Exception(response['error'])` on a `sendRequest` failure.**
+  It discards `statusCode`, so 401 reaches the user as "Kutilmagan xatolik" and
+  `ServerErrorPage` hides the `Chiqish` button that would let them recover. Use
+  `ApiErrorHandler.fromResponse`.
+- **Do not expect `appLogger` output from a release build.** It is
+  `Level.nothing` under `kReleaseMode`. Release-mode diagnosis needs a temporary
+  `debugPrint`, which must be removed afterwards.
 - **Do not go looking for a film with no `lastSeries`.** 170 were probed on
   2026-08-19 (the 20 most recently updated and the 150 oldest by `publish_time`)
   and every one had a populated `lastSeries.track`. The `getFirstEpisode`
@@ -2651,6 +2753,16 @@ debug-only `assert` in `cached_network_image`, tripped by
 (`lib/widgets/poster_card.dart`, `lib/screens/genres_screen.dart`) and all three
 affected surfaces were verified on the device. Release behaviour is unchanged,
 because the parameters were already being ignored there.
+
+**v1.0.8 shipped broken and was republished on 2026-08-19** — the resource
+shrinker deleted `ic_notification`, the notification init threw before
+`runApp`, and the app sat on the splash forever. Fixed with `res/raw/keep.xml`
+plus a guard around that whole block, verified on a release build, and the
+release assets were replaced **without a version bump at the owner's
+instruction**. Devices already on the broken v1.0.8 will therefore not be
+offered the fix by the OTA check — they need a manual reinstall or a `v1.0.9`.
+The catalogue home is still unverified on release, because reaching it needs
+the owner's login.
 
 **The Medium/Low list is empty except for the release-build repeats**
 (2026-08-19, part 4). Segment concurrency at 48 is measured and stays,
