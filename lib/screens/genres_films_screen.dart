@@ -208,6 +208,14 @@ class _GenresFilmsScreenState extends State<GenresFilmsScreen> {
                             ),
                           ),
                         ),
+                      // `edgeToEdge` — bu ekran oynaning pastigacha chizadi,
+                      // shuning uchun oxirgi qator navigatsiya paneli ostida
+                      // qolmasligi uchun skroll ichida bo'shliq qoldiriladi.
+                      SliverToBoxAdapter(
+                        child: SizedBox(
+                          height: MediaQuery.of(context).viewPadding.bottom,
+                        ),
+                      ),
                     ],
                   ),
         ),

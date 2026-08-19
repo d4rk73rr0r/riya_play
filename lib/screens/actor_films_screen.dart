@@ -147,6 +147,13 @@ class _ActorFilmsScreenState extends State<ActorFilmsScreen> {
               ),
             ),
           ),
+        // Ilova `edgeToEdge` rejimida ishlaydi va bu ekran oynaning eng
+        // pastigacha chizadi, ya'ni oxirgi qator tizim navigatsiya paneli
+        // ostida qolardi. Bo'shliq skroll ichida — kontent panel ortidan
+        // o'tib ketaveradi, lekin oxirigacha yetkazish mumkin bo'ladi.
+        SliverToBoxAdapter(
+          child: SizedBox(height: MediaQuery.of(context).viewPadding.bottom),
+        ),
       ],
     );
   }

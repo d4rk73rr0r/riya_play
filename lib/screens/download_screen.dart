@@ -138,7 +138,16 @@ class _DownloadScreenState extends State<DownloadScreen> {
         ],
       ),
       body: Padding(
-        padding: const EdgeInsets.all(AppSpacing.lg),
+        // `edgeToEdge` — ekran oynaning pastigacha chizadi, ya'ni navbatning
+        // oxirgi kartochkasi tizim navigatsiya paneli ostida qolardi. Bu yerda
+        // bo'shliq skroll ichida emas, tashqarisida: fon bir tekis, panel
+        // ortidan o'tayotgan kartochkani ko'rsatishdan foyda yo'q.
+        padding: EdgeInsets.fromLTRB(
+          AppSpacing.lg,
+          AppSpacing.lg,
+          AppSpacing.lg,
+          AppSpacing.lg + MediaQuery.of(context).viewPadding.bottom,
+        ),
         child: _buildBody(themeProvider),
       ),
     );
