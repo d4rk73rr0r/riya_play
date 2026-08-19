@@ -67,8 +67,12 @@ class _PosterCardState extends State<PosterCard>
       imageUrl: widget.imageUrl,
       cacheManager: filmImagesCacheManager,
       fit: BoxFit.cover,
-      maxWidthDiskCache: 300,
-      maxHeightDiskCache: 400,
+      // maxWidthDiskCache/maxHeightDiskCache atayin yo'q: ular faqat
+      // cacheManager ImageCacheManager bo'lganda ishlaydi. filmImagesCacheManager
+      // oddiy CacheManager, shuning uchun cached_network_image debug'da
+      // assert'da yiqilardi va har bir poster errorWidget (broken_image)
+      // bo'lib chiqardi; release'da assert olib tashlangani uchun parametrlar
+      // shunchaki e'tiborsiz qolardi. Kerak bo'lsa memCacheWidth ishlatilsin.
       fadeInDuration: const Duration(milliseconds: 250),
       placeholder: (context, url) => Container(color: themeProvider.cardColor),
       errorWidget:

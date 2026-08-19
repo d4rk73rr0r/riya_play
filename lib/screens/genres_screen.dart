@@ -144,6 +144,13 @@ class _GenresScreenState extends State<GenresScreen> {
                       ),
                     ),
                   ),
+                  // `edgeToEdge` — ro'yxat oynaning pastigacha chizadi, oxirgi
+                  // kartochka esa navigatsiya paneli ostida qolardi.
+                  SliverToBoxAdapter(
+                    child: SizedBox(
+                      height: MediaQuery.of(context).viewPadding.bottom,
+                    ),
+                  ),
                 ],
               ),
     );
@@ -190,8 +197,9 @@ class GenreCard extends StatelessWidget {
                   width: double.infinity,
                   height: 200,
                   fit: BoxFit.cover,
-                  maxWidthDiskCache: 600,
-                  maxHeightDiskCache: 300,
+                  // maxWidthDiskCache/maxHeightDiskCache olib tashlandi —
+                  // filmImagesCacheManager ImageCacheManager emas, shuning
+                  // uchun debug'da assert yiqilib muqova broken_image bo'lardi
                   fadeInDuration: const Duration(milliseconds: 300),
                   placeholder:
                       (context, url) => Container(
