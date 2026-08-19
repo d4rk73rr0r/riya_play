@@ -470,6 +470,7 @@ release build renders them.
 | `v1.0.5` | `1.0.5+6` | 1006 / 2006 / 4006 | 2026-08-17 13:25 | navigation-bar insets, episode-card overflow |
 | `v1.0.6` | `1.0.6+7` | 1007 / 2007 / 4007 | 2026-08-18 06:05 | one-card continue-watching update, release-notes scrollbar |
 | `v1.0.7` | `1.0.7+8` | 1008 / 2008 / 4008 | 2026-08-18 08:34 | card captions, 2x2 / 3x3 grid density |
+| `v1.0.8` | `1.0.8+9` | 1009 / 2009 / 4009 | 2026-08-19 10:06 | new-content notifications, the bottom-inset sweep, the debug poster fix |
 
 `v1.0.6` did not publish on the first two tries: `gh` returned
 `HTTP 503: No server is currently available` from
@@ -1992,6 +1993,7 @@ verified on device.)
 | ~~Publish `v1.0.5`~~ | — | `pubspec.yaml` | Medium | **DONE (2026-08-17)** | Published to `d4rk73rr0r/rplay-releases` at 13:25 UTC with all three split APKs (`gh release create`), and the OTA check on the device's `1.0.4 / 2005` install answered "Yangi versiya mavjud — Versiya 1.0.5 · 45.2 MB" |
 | ~~Publish `v1.0.6`~~ | Carries the continue-watching single-card update and the release-notes scrollbar | `pubspec.yaml` | Medium | **DONE (2026-08-18)** | `1.0.6+7` → `1006 / 2006 / 4006`, published 06:05 UTC. The first attempts failed with `HTTP 503` during a GitHub-wide incident, not through any fault of the command — see the note in the 2026-08-18 session |
 | ~~Publish `v1.0.7`~~ | Carries the card captions and the grid-density setting | `pubspec.yaml` | Medium | **DONE (2026-08-18)** | `1.0.7+8` → `1008 / 2008 / 4008`, published 08:34 UTC, Latest, all three assets `uploaded` |
+| ~~Publish `v1.0.8`~~ | Carries the new-content notifications, the bottom-inset sweep and the debug poster fix | `pubspec.yaml` | Medium | **DONE (2026-08-19)** | `1.0.8+9` → `1009 / 2009 / 4009`, verified with `aapt dump badging` on all three APKs, published 10:06 UTC as Latest with every asset `uploaded`. `gh release create` succeeded on the first attempt, no orphan draft |
 | The update dialog's release notes look truncated | Long notes stop mid-sentence at the bottom of the box, with no visible scrollbar or fade | `lib/services/update_service.dart` | Low | **Not a defect** | The notes already sit in `ConstrainedBox(maxHeight: 160)` + `SingleChildScrollView` and scroll fine — confirmed by hand on the `v1.0.5` dialog. Only the affordance is missing; add a `Scrollbar` or a bottom fade if it is worth it |
 | **Find the idle ~120 fps redraw on the home tab** | Measured, cause not isolated; the ring animation was ruled out | `lib/screens/index_screen.dart` | Medium | Not started | DevTools timeline on a profile build while the home tab sits untouched |
 | **Measure memory over navigation cycles** | Not covered by the audit | — | Medium | **Partly done (2026-08-17)** | The player half is measured on release: four play → Back cycles, Java heap 139 → 140 → 166 → 95 MB, bounded. Still unmeasured: Home → Catalog → FilmScreen cycles without playback, and TV channels |
@@ -2458,13 +2460,13 @@ debug-only `assert` in `cached_network_image`, tripped by
 affected surfaces were verified on the device. Release behaviour is unchanged,
 because the parameters were already being ignored there.
 
-**The working tree carries uncommitted work.** As of 2026-08-18 the
-tree was committed and pushed to `main`, and `v1.0.7` (`1.0.7+8` →
-`1008 / 2008 / 4008`) is the Latest release on `d4rk73rr0r/rplay-releases` with
-all three split APKs. `v1.0.4`, `v1.0.5` and `v1.0.6` went out too, so the old
-"Publish v1.0.4" item is closed. Both 2026-08-19 changes — the notifications and
-the inset sweep — are **not committed and not released**; `pubspec.yaml` is still
-`1.0.7+8`, so a release that carries them needs a bump to `1.0.8+9` first.
+**The working tree is clean and everything is released.** All three 2026-08-19
+changes — the new-content notifications, the bottom-inset sweep and the debug
+poster fix — were committed as four commits plus a docs commit and pushed to
+`main` (`a96ef45..f5d0d83`). `pubspec.yaml` is `1.0.8+9`, and `v1.0.8`
+(`1009 / 2009 / 4009`) is the Latest release on `d4rk73rr0r/rplay-releases` with
+all three split APKs `uploaded`. The next release needs a bump to `1.0.9+10`
+first.
 
 The open list is the Medium/Low set at the end of this document:
 
