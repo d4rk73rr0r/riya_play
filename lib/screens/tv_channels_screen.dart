@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:riya_play/services/error_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter_cache_manager/flutter_cache_manager.dart';
@@ -89,7 +90,7 @@ class _TVChannelsScreenState extends State<TVChannelsScreen>
     } catch (e) {
       if (mounted) {
         setState(() => _isLoading = false);
-        _showErrorSnackBar("TV ma'lumotlarini yuklashda xato: $e");
+        _showErrorSnackBar(ApiErrorHandler.handle(e).userMessage);
       }
     }
   }
@@ -187,9 +188,19 @@ class _TVChannelsScreenState extends State<TVChannelsScreen>
             channelDetails['channel_stream_all'] ??
             channelDetails['test_stream'];
       }
-      if (videoUrl == null) throw Exception("Strim URL topilmadi");
+      // `ErrorInfo` otiladi, `Exception` emas: `ApiErrorHandler.handle` uni
+      // o'zgartirmasdan qaytaradi, shuning uchun bu aniq xabar saqlanadi,
+      // tarmoq xatosi esa o'zining klassifikatsiyasini oladi.
+      if (videoUrl == null) {
+        throw const ErrorInfo(
+          type: ErrorType.notFound,
+          message: 'stream url missing',
+          userMessage: 'Bu kanal uchun strim topilmadi.',
+          canRetry: false,
+        );
+      }
     } catch (e) {
-      _showErrorSnackBar("Strim URL'ni olishda xato: $e");
+      _showErrorSnackBar(ApiErrorHandler.handle(e).userMessage);
       return;
     }
 
@@ -276,7 +287,9 @@ class _TVChannelsScreenState extends State<TVChannelsScreen>
         await intent.launch();
       } catch (e) {
         if (mounted) {
-          _showErrorSnackBar("Tashqi pleerni ochishda xato: $e");
+          // Bu API xatosi emas — intent xatosining `toString()` i
+          // foydalanuvchiga hech narsa bermaydi.
+          _showErrorSnackBar('Tashqi pleerni ochib bo‘lmadi.');
         }
       }
     }

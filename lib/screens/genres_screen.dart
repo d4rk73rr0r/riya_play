@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:riya_play/services/error_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:riya_play/services/api_service.dart';
 import 'package:riya_play/screens/genres_films_screen.dart';
@@ -48,7 +49,7 @@ class _GenresScreenState extends State<GenresScreen> {
           hasError = true;
         });
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text("Janrlar yuklashda xatolik: $e")),
+          SnackBar(content: Text(ApiErrorHandler.handle(e).userMessage)),
         );
       }
     }

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:riya_play/services/error_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:riya_play/screens/profile/activate_tv_screen.dart';
 import 'package:riya_play/services/api_service.dart';
@@ -65,7 +66,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
       });
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Versiya ma\'lumotini olishda xato: $e')),
+          SnackBar(content: Text(ApiErrorHandler.handle(e).userMessage)),
         );
       }
     }
@@ -123,9 +124,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   semanticsLabel: "Xato",
                 ),
                 content: Text(
-                  "Chiqishda xato: $e",
+                  ApiErrorHandler.handle(e).userMessage,
                   style: TextStyle(color: themeProvider.subTextColor),
-                  semanticsLabel: "Chiqishda xato: $e",
+                  semanticsLabel: ApiErrorHandler.handle(e).userMessage,
                 ),
                 actions: [
                   TextButton(

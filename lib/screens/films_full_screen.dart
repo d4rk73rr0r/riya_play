@@ -340,7 +340,9 @@ class _FilmsFullScreenState extends State<FilmsFullScreen>
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(SnackBar(content: Text("Qismlarni olishda xato: $e")));
+      ).showSnackBar(
+        SnackBar(content: Text(ApiErrorHandler.handle(e).userMessage)),
+      );
       return;
     }
 
@@ -431,7 +433,9 @@ class _FilmsFullScreenState extends State<FilmsFullScreen>
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text("Yangi URL olishda xato: $e")));
+        ).showSnackBar(
+          SnackBar(content: Text(ApiErrorHandler.handle(e).userMessage)),
+        );
       }
       return initialUrl;
     }

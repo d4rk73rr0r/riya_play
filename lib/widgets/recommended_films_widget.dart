@@ -75,7 +75,10 @@ class RecommendedFilmsWidget extends StatelessWidget {
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           Text(
-                            "Xato: $error",
+                            // `error` allaqachon `ApiErrorHandler` bergan
+                            // foydalanuvchi matni — oldiga "Xato:" qo'shish
+                            // shart emas.
+                            error!,
                             style: const TextStyle(
                               fontSize: 16,
                               color: Colors.grey,

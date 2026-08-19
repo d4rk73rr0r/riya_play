@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:riya_play/services/error_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:riya_play/services/api_service.dart';
 import 'package:riya_play/screens/film_screen.dart';
@@ -94,7 +95,7 @@ class _CatalogScreenState extends State<CatalogScreen>
       if (mounted) {
         setState(() {
           _isInitialLoading = false;
-          _categoriesError = "Ma'lumotlarni yuklashda xatolik: $e";
+          _categoriesError = ApiErrorHandler.handle(e).userMessage;
         });
       }
     }
@@ -171,7 +172,7 @@ class _CatalogScreenState extends State<CatalogScreen>
       if (mounted) {
         setState(() {
           _isInitialLoading = false;
-          _categoriesError = 'Kategoriyalarni yuklashda xato: $e';
+          _categoriesError = ApiErrorHandler.handle(e).userMessage;
           _categories = [];
           _tabController = TabController(length: 1, vsync: this);
         });
@@ -289,7 +290,9 @@ class _CatalogScreenState extends State<CatalogScreen>
         });
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text("Xato: $e")));
+        ).showSnackBar(
+          SnackBar(content: Text(ApiErrorHandler.handle(e).userMessage)),
+        );
       }
     } finally {
       if (mounted) {

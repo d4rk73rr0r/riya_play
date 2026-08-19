@@ -163,7 +163,9 @@ class VideoLauncher {
           ).launch();
         } catch (e) {
           if (context.mounted) {
-            _showError(context, "Tashqi pleerni ochishda xato: $e");
+            // Intent xatosining `toString()` i foydalanuvchiga hech narsa
+            // bermaydi — bu API xatosi emas.
+            _showError(context, 'Tashqi pleerni ochib bo‘lmadi.');
           }
         }
         return;

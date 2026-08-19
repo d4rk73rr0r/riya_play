@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:riya_play/services/error_handler.dart';
 
 /// Result of fetching a single page: the items on that page, plus whether
 /// more pages remain. Callers decide `hasMore` however fits their API shape
@@ -104,7 +105,10 @@ class PaginationController<T> extends ChangeNotifier {
       if (newItems.isNotEmpty) _page++;
       if (newItems.isNotEmpty) _onPageLoaded?.call(newItems);
     } catch (e) {
-      error = "Ma'lumotlarni yuklashda xatolik: $e";
+      // Xom `$e` emas: `sendRequest` hech qachon otmaydi, shuning uchun bu
+      // yerga kelgan narsa odatda tarmoq yoki parsing istisnosi — ularning
+      // `toString()` i foydalanuvchiga hech narsa aytmaydi.
+      error = ApiErrorHandler.handle(e).userMessage;
       _onError?.call(e);
     } finally {
       isLoading = false;

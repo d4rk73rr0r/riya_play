@@ -86,7 +86,7 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
       if (!mounted) return;
       setState(() {
         _isLoadingCategories = false;
-        _categoriesError = "Kategoriyalarni yuklashda xato: $e";
+        _categoriesError = ApiErrorHandler.handle(e).userMessage;
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(ApiErrorHandler.handle(e).userMessage)),

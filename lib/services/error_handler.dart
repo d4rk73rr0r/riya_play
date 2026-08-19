@@ -66,10 +66,10 @@ class ApiErrorHandler {
 
     // Server javob berdi — bu tarmoq muammosi emas.
     if (error is HttpStatusException) {
-      return _fromStatus(error.statusCode);
+      return fromStatus(error.statusCode);
     }
     if (error is http.Response) {
-      return _fromStatus(error.statusCode);
+      return fromStatus(error.statusCode);
     }
 
     if (error is SocketException) {
@@ -116,7 +116,12 @@ class ApiErrorHandler {
     );
   }
 
-  static ErrorInfo _fromStatus(int statusCode) {
+  /// Classifies a bare status code.
+  ///
+  /// `sendRequest` never throws — it returns `success: false` plus a
+  /// `statusCode`, so callers that read that map have a number and no
+  /// exception to hand to [handle].
+  static ErrorInfo fromStatus(int statusCode) {
     switch (statusCode) {
       case 400:
         return const ErrorInfo(

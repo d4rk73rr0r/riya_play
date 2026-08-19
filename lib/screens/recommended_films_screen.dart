@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:riya_play/services/error_handler.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:riya_play/screens/film_screen.dart';
@@ -33,7 +34,9 @@ class _RecommendedFilmsScreenState extends State<RecommendedFilmsScreen> {
             onError: (e) {
               if (mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text("Kontent yuklashda xatolik: $e")),
+                  SnackBar(
+                    content: Text(ApiErrorHandler.handle(e).userMessage),
+                  ),
                 );
               }
             },

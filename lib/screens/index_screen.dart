@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:riya_play/services/error_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:riya_play/screens/latestviewed_screen.dart';
@@ -417,7 +418,8 @@ class _IndexScreenContentState extends State<IndexScreenContent>
     } catch (e, stackTrace) {
       appLogger.d('Error fetching initial data: $e');
       appLogger.d('StackTrace: $stackTrace');
-      provider.setGlobalError('Umumiy xato: $e', null);
+      final info = ApiErrorHandler.handle(e);
+      provider.setGlobalError(info.userMessage, info.statusCode);
     }
   }
 
@@ -430,15 +432,21 @@ class _IndexScreenContentState extends State<IndexScreenContent>
     try {
       final data = await fetchFunction();
       if (data is Map<String, dynamic> && data['success'] == false) {
+        // `onError` matni ekranga chiqadi, shuning uchun bu yerda xom
+        // `data['error']` (odatda istisnoning `toString()` i) emas,
+        // klassifikatsiya qilingan xabar uzatiladi.
         final statusCode = data['statusCode'] as int?;
-        final error = data['error']?.toString() ?? 'Noma’lum xato';
-        onError(error, statusCode);
+        appLogger.d('$errorMessage: ${data['error']} (HTTP $statusCode)');
+        final info =
+            statusCode != null
+                ? ApiErrorHandler.fromStatus(statusCode)
+                : ApiErrorHandler.handle(data['error']);
+        onError(info.userMessage, statusCode);
       } else {
         onSuccess(data);
       }
     } catch (e, stackTrace) {
-      final error = e.toString();
-      onError(error, null);
+      onError(ApiErrorHandler.handle(e).userMessage, null);
       appLogger.d('$errorMessage xatosi: $e\nStackTrace: $stackTrace');
     }
   }
@@ -637,7 +645,9 @@ class _IndexScreenContentState extends State<IndexScreenContent>
       if (mounted) {
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('Xatolik yuz berdi: $e')));
+        ).showSnackBar(
+          SnackBar(content: Text(ApiErrorHandler.handle(e).userMessage)),
+        );
       }
     }
   }
@@ -1353,7 +1363,7 @@ class GenresSection extends StatelessWidget {
           child: Column(
             children: [
               Text(
-                "Janrlarni yuklashda xato: $error",
+                error,
                 style: const TextStyle(fontSize: 16, color: Colors.grey),
                 textAlign: TextAlign.center,
               ),
