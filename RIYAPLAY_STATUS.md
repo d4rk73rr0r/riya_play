@@ -39,6 +39,12 @@ channels, favourites, playback and offline downloads.
   favorites}_api.dart`, and `api_service.dart` as a thin re-exporting facade.
 - TV channels bypass that stack entirely via `tv_api_service.dart`
   (SalomTV / SpecUZ / BizTV).
+- New-content notifications are three files in `lib/services/`
+  (`notification_service.dart`, `new_content_service.dart`,
+  `new_content_scheduler.dart`) plus `lib/utils/notification_router.dart`. The
+  poller compares `publish_time` against one `SharedPreferences` key and runs
+  both on a 5-minute `Timer` and on an `AndroidAlarmManager` alarm, so it keeps
+  working after the process is killed.
 - Downloads are the most intricate part: `services/download_manager.dart`
   (queue, persistence, network gating) + `services/download_service.dart`
   (HLS parsing, transfer, resume, remux) + Kotlin
@@ -62,6 +68,268 @@ The session covered four areas, in order:
 4. **"Ko'rishni davom ettirish" (continue watching) bugs** — wrong film id,
    wrong progress denominator, wrong sort order; plus the cards now start
    playback directly instead of opening the film page.
+
+### Session of 2026-08-19 — new-content notifications
+
+A feature request, not a bug hunt: notify the user when the catalogue gets new
+content, headline **"Yangi kontent mavjud"**, a one-line summary of the title
+underneath, and a tap that opens that film's page. Polling interval requested:
+5 minutes.
+
+#### How "new" is decided
+
+The source is the catalogue search endpoint the request named:
+
+```
+GET /v2/films/search?include=files,paid,tags,genres,holder.logo
+                    &_l=uz&_f=json&t=<epoch ms>&sort=-updated_at&page=1
+```
+
+Verified against the live server before writing any code:
+
+- It answers **without an `Authorization` header** (HTTP 200, ~168 KB, 20 rows,
+  `_meta.totalCount` 5181). The poller therefore does not read `auth_token`,
+  which matters because it also runs from a background isolate.
+- **`sort=-updated_at` is not `sort=-publish_time`.** In the sample response
+  `Ulfatlar Tailandda` sat third with `publish_time` 1737620268 but
+  `updated_at` 1787121181 — an old film that had just been edited. So the
+  newest *publication* is not necessarily row 1, and the whole page has to be
+  scanned rather than only its head.
+- `type` is a bare integer here (it is an object only on
+  `/v2/films/{id}?include=type`). Confirmed by fetching three films:
+  **1 = Serial, 2 = Film, 5 = Multfilm.** Anything else is simply omitted from
+  the notification text.
+
+The rule is one number in `SharedPreferences`, `new_content_last_publish_time`:
+every row with `status == 1` and `publish_time > lastSeen` is new, and the
+maximum `publish_time` on the page is stored afterwards. **The first run stores
+the baseline and notifies nothing** — otherwise installing the app would fire a
+burst of notifications for a catalogue the user has never seen. At most five
+notifications are posted per check; rows beyond that are still marked as seen,
+because a 20-film batch import must not produce 20 notifications.
+
+#### Scheduling: a timer *and* an alarm
+
+| Path | Runs when | Where |
+| --- | --- | --- |
+| `Timer.periodic(5 min)` | the app process is alive | main isolate |
+| `AndroidAlarmManager.periodic(5 min)` | always, including after the process is killed | its own background isolate |
+
+Both call the same `NewContentService.checkOnce()`, which never throws — neither
+caller has a screen to report an error on.
+
+The alarm is deliberately **inexact** (`exact: false`). An exact alarm needs
+`SCHEDULE_EXACT_ALARM`, which Android 14 denies by default and which would have
+to be begged for in a separate system screen. The price is jitter, and it was
+measured rather than assumed: the alarm registered at **13:52:35** fired at
+**14:01:20** — the 5-minute period plus the `window=+3m45s` the platform
+attaches to an inexact repeat, plus app-standby deferral. `repeatInterval=300000`
+and `type=RTC_WAKEUP` are visible in `dumpsys alarm`. Under Doze the gap will be
+larger still. Closing that gap needs a server push (FCM); there is no
+client-side way around it.
+
+#### The defect that only appears on a real device
+
+`@pragma('vm:entry-point')` on a **static method is not enough.** The first
+build registered `NewContentScheduler.alarmCallback` and the alarm fired
+correctly, but the isolate died immediately:
+
+```
+E DartVM  : ERROR: To access 'package:riya_play/services/new_content_scheduler.dart::NewContentScheduler' from native code, it must be annotated.
+```
+
+The VM needs the *enclosing class* annotated too. The callback is now a
+top-level function, `newContentAlarmCallback`, and the file records why. This
+is invisible to `flutter analyze` and to any foreground test — only the
+process-killed path exercises it.
+
+Two smaller things the device settled as well:
+
+- **Register the alarm before asking for the notification permission.**
+  `requestNotificationsPermission()` opens the Android 13+ system dialog and the
+  `await` does not return until the user answers it. With the original ordering
+  a user who swiped the dialog away would never have had an alarm scheduled at
+  all. Observed on the first run: the app sat on
+  `GrantPermissionsActivity` and `new_content_last_publish_time` was never
+  written.
+- **The launcher icon cannot be the notification icon.** Android 5+ keeps only
+  the alpha channel of a small notification icon, so `@mipmap/launcher_icon`
+  renders as a white block. `res/drawable/ic_notification.xml` is a flat white
+  vector silhouette.
+
+#### Opening the film from the notification
+
+There is no `BuildContext` when a notification is tapped, and often no process
+either, so `lib/utils/notification_router.dart` owns a `GlobalKey<NavigatorState>`
+(`appNavigatorKey`, now passed to `MaterialApp.navigatorKey`) and a one-slot
+queue:
+
+- **App alive** — the plugin calls `onDidReceiveNotificationResponse`, the
+  payload (the film id as text) is parsed and the route is pushed at once.
+- **App killed** — the tap launches the app;
+  `NotificationService.pendingLaunchFilmId()` reads
+  `getNotificationAppLaunchDetails()` in `main()` **before `runApp`**, and the id
+  waits until `MainScreen`'s first frame calls `markNavigatorReady()`.
+
+Tying the flush to `MainScreen` rather than to the navigator is deliberate: an
+unauthenticated user gets `AuthScreen`, and `FilmScreen` cannot load without a
+token, so nothing is pushed on top of the login screen. `markNavigatorGone()`
+drops any queued id when `MainScreen` is disposed.
+
+#### Files
+
+| File | Change |
+| --- | --- |
+| `lib/services/notification_service.dart` | **new** — plugin setup, channel `riyaplay_new_content`, permission request, launch-payload read, `showNewContent` (poster fetched as `largeIcon`, failure is silent) |
+| `lib/services/new_content_service.dart` | **new** — the `publish_time` comparison, the notification text, the prefs keys |
+| `lib/services/new_content_scheduler.dart` | **new** — timer + alarm, `newContentAlarmCallback`, `isEnabled` / `setEnabled` / `stop` |
+| `lib/utils/notification_router.dart` | **new** — `appNavigatorKey` and the tap → `FilmScreen` route |
+| `lib/services/api/films_api.dart` | `getLatestPublished()`; forwarded by `api_service.dart` |
+| `lib/main.dart` | init before `runApp`, `navigatorKey`, `markNavigatorReady()` and `_startNewContentWatch()` in `MainScreen`'s post-frame callback |
+| `lib/screens/profile_screen.dart` | "Yangi kontent bildirishnomasi" row (Yoqilgan / O'chirilgan), and `NewContentScheduler.stop()` on logout |
+| `lib/screens/error_pages.dart` | `NewContentScheduler.stop()` on its logout path too |
+| `android/app/src/main/AndroidManifest.xml` | `RECEIVE_BOOT_COMPLETED`, plus the plugin's `AlarmService` / `AlarmBroadcastReceiver` / `RebootBroadcastReceiver` — the plugin does **not** declare them itself |
+| `android/app/src/main/res/drawable/ic_notification.xml` | **new** — status-bar silhouette |
+| `android/settings.gradle.kts` | AGP `8.11.1` → `8.12.1`, the minimum `android_alarm_manager_plus` 5.x accepts |
+| `pubspec.yaml` | `flutter_local_notifications ^22.3.0`, `android_alarm_manager_plus ^5.1.1` (`timezone` comes in transitively) |
+
+#### Tests performed (debug build, SM-A556E, Android 16)
+
+| Test | Result |
+| --- | --- |
+| First launch after install | **PASS.** No notification; `new_content_last_publish_time` written as `1787123287`, the page's real maximum |
+| Rewind the pref to `1787114000`, relaunch | **PASS.** Exactly four notifications, one per film published after that instant, each "Yangi kontent mavjud" over e.g. `Karantindagi qiz (2026) · Film · Triller, Dramma`, with its poster as the large icon and grouped under one "Riya Play" header |
+| Tap with the process **killed** (`am kill`, confirmed gone from `ps`) | **PASS.** Cold start landed directly on `FilmScreen` for `Karantindagi qiz` (id 17549) |
+| Tap with the app **running** | **PASS.** `Qirolning xos soxchisi` (id 17547) opened; the tapped notification auto-cancelled, the others stayed |
+| Background alarm with the process killed | **PASS.** `AlarmService started!` at 14:01:22, `Yangi kontent: 4 ta, 4 ta bildirishnoma`, and the pref advanced `1787110000 → 1787123287` without the app ever being opened |
+| Profil toggle → "O'chirilgan" | **PASS.** `new_content_notifications_enabled=false` and no live `riyaplay.debug` alarm left in `dumpsys alarm` |
+| Profil toggle → "Yoqilgan" | **PASS.** Alarm back, `origWhen=14:11:05 repeatInterval=300000` |
+| Merged manifest | **PASS.** All three plugin components and `RECEIVE_BOOT_COMPLETED` present in `processDebugMainManifest/AndroidManifest.xml` |
+| `flutter analyze lib` | 5 pre-existing infos, the unchanged baseline |
+
+Not tested: behaviour after a real reboot (`rescheduleOnReboot: true` is set and
+`AlarmService: Rescheduling after boot!` was logged, but no reboot was
+performed), Doze-deferred timing overnight, and the whole feature on a release
+build.
+
+### Session of 2026-08-19, part 2 — the bottom-inset sweep
+
+The open item at the top of "Next Recommended Step": `FilmScreen` and
+`FilmsFullScreen` were fixed on 2026-08-17, but the other pushed routes had
+never been checked. Every one of them was read and then scrolled to its end on
+the device.
+
+Four had the defect. The recipe is the one part 7 used for the catalog grid —
+the space goes **inside** the scrollable, so content still passes behind the
+navigation bar while the last row stays reachable:
+
+| File | Change |
+| --- | --- |
+| `lib/screens/actor_films_screen.dart` | trailing `SliverToBoxAdapter` spacer of `viewPadding.bottom` |
+| `lib/screens/genres_films_screen.dart` | same |
+| `lib/screens/genres_screen.dart` | same |
+| `lib/screens/download_screen.dart` | body `Padding` bottom `AppSpacing.lg` → `AppSpacing.lg + viewPadding.bottom` |
+
+`download_screen` is the deliberate exception to "inside the scrollable": it has
+an opaque scaffold background and an `AppBar`, so there is nothing to see
+through the navigation bar and letting a task card slide under it buys nothing.
+
+Five screens already handled it and were left alone — **the sweep is not a
+licence to add padding everywhere**:
+
+| Screen | Why nothing was changed |
+| --- | --- |
+| `recommended_films_screen`, `categories_screen`, `profile/devices_screen`, `profile/profile_details_screen` | wrapped in `SafeArea`, whose default `bottom: true` already reserves the inset |
+| `latestviewed_screen`, `profile/history_screen`, `favorites_screen` | already pad with `MediaQuery.viewPadding.bottom` |
+| `profile/activate_tv_screen` | a full-screen camera `Stack`; nothing is anchored to the bottom |
+| `tv_channels_screen` | a **tab**, not covered by part 7, so it was checked anyway — the last row of the "Ilmiy" category ends well clear of the glass menu |
+
+#### Verified on device (debug build)
+
+| Screen | Last item at the end of the scroll |
+| --- | --- |
+| Janrlar (`genres_screen`) | "Реальное ТВ" card fully visible above the navigation bar |
+| Janr → Klassik (`genres_films_screen`) | the "Barcha filmlar ko'rsatildi" footer fully visible |
+| Aktyor → So Xyon-u (`actor_films_screen`) | "Mening ismim Ro Gi…" card with its year line, clear of the bar |
+| Yuklab olish, 10 tasks (`download_screen`) | "Qotillar do'koni (1-fasl, 1-qism)" with its "Bekor qilish" button, clear |
+| TV → Ilmiy (`tv_channels_screen`) | "Renessans_TV" / "Hayot TV" clear of the glass menu — unchanged, as expected |
+
+**How the download queue was filled without spending any mobile data**: turn
+"Faqat Wi-Fi orqali" **on** while the device is on 4G, then queue a whole series
+(`Qotillar do'koni`, "Barcha fasllar (2 ta)", 240p). All ten tasks sit at
+"Wi-Fi kutilmoqda" and not a byte is transferred. Cleanup afterwards is
+"Bekor qilish" on each card — cancelled counts as `isFinished`, so "Tozalash"
+then removes them — and the toggle goes back off. Worth reusing for any
+queue-rendering question.
+
+`flutter analyze lib`: 5 pre-existing infos, the unchanged baseline.
+
+### Session of 2026-08-19, part 3 — the debug-only broken posters, explained
+
+The open item at the top of the Medium/Low list, carried since 2026-08-13 with
+**root cause UNKNOWN**: in a debug build the Katalog and Sevimlilar grids draw
+`Icons.broken_image` instead of the artwork, while the release build renders it.
+Re-confirmed on 2026-08-18 in both grid densities, so it was never a
+grid-density regression.
+
+**Cause: an `assert` that only exists in debug.** `PosterCard` asks for a
+disk-cache resize while handing `CachedNetworkImage` a cache manager that cannot
+do one:
+
+```dart
+// lib/widgets/poster_card.dart
+cacheManager: filmImagesCacheManager,   // a plain CacheManager
+maxWidthDiskCache: 300,
+maxHeightDiskCache: 400,
+```
+
+`cached_network_image-3.4.1/lib/src/image_provider/_image_loader.dart:89`:
+
+```dart
+assert(
+    cacheManager is ImageCacheManager ||
+        (maxWidth == null && maxHeight == null),
+    'To resize the image with a CacheManager the '
+    'CacheManager needs to be an ImageCacheManager. maxWidth and '
+    'maxHeight will be ignored when a normal CacheManager is used.');
+```
+
+`filmImagesCacheManager` (`lib/utils/image_cache_manager.dart`) is
+`CacheManager(Config(...))`. Only `DefaultCacheManager` carries the mixin
+(`class DefaultCacheManager extends CacheManager with ImageCacheManager`).
+
+So in **debug** the assertion throws, the surrounding `on Object catch` turns it
+into `yield* Stream.error(...)`, and every tile falls through to
+`PosterCard`'s `errorWidget` — the broken-image icon. In **release** asserts are
+stripped, the same code takes the `getFileStream` branch, and the image loads.
+The resize parameters have therefore **never** done anything in a shipped build.
+
+**Two call sites had it**, not one:
+
+| File | What it asked for |
+| --- | --- |
+| `lib/widgets/poster_card.dart` | `300 × 400` — used by Katalog, Sevimlilar, `recommended_films_screen`, `genres_films_screen`, `categories_screen`, `profile/history_screen` |
+| `lib/screens/genres_screen.dart` | `600 × 300` for the genre cover images — never reported, but the same construct and therefore the same failure |
+
+**Fix: both pairs of parameters removed.** Making `filmImagesCacheManager` an
+`ImageCacheManager` was the other option and was rejected: `_resizeImageFile`
+writes the resized bytes back as **PNG** while keeping the original extension
+(`image_cache_manager.dart:98`), so a ~20 KB JPEG poster would be re-stored as a
+few hundred KB, twice over (original + resized), against
+`maxNrOfCacheObjects: 300`. Dropping the parameters changes release behaviour by
+nothing at all — they were already inert there — and makes debug match it.
+`memCacheWidth` is the cheap way to bound decoded size if that is ever wanted;
+it uses `ResizeImage` and needs no special cache manager.
+
+**Verified on device** (debug build, SM-A556E, rebuilt and reinstalled):
+
+| Screen | Result |
+| --- | --- |
+| Katalog grid | **PASS.** Karantindagi qiz, Akal boysunmas, Ulfatlar Tailandda, Qirolning xos soxchisi all render |
+| Sevimlilar grid | **PASS.** Olov pazanda, Qashqirlar Makoni, Anakonda, Yomonlik dunyoga ustun bo'lolmas all render |
+| Janrlar (`genres_screen`) | **PASS.** Jangari / Dramma / Klassik cover collages all render |
+
+`flutter analyze lib`: 5 pre-existing infos, the unchanged baseline.
 
 ### Session of 2026-08-17 — the release-build repeat, and navigation-bar insets
 
@@ -1674,11 +1942,15 @@ verified on device.)
 
 ### Medium
 
-2. **Actor-screen posters do not render in debug builds.** Reported by the
-   user as a pre-existing debug-only behaviour (release renders fine). The
-   API payload was verified correct (4 films, each with `files` and
-   `thumbnails`, and both the thumbnail and full-size URLs return HTTP 200).
-   **Root cause UNKNOWN / NEEDS VERIFICATION.**
+2. ~~**Posters do not render in debug builds.**~~ **RESOLVED (2026-08-19,
+   part 3).** `PosterCard` (and `genres_screen`) passed
+   `maxWidthDiskCache` / `maxHeightDiskCache` while using
+   `filmImagesCacheManager`, a plain `CacheManager`. `cached_network_image`
+   asserts that the manager is an `ImageCacheManager` when a resize is
+   requested; the assertion throws in debug only, and the error reaches
+   `errorWidget`. Both parameter pairs were removed — they were inert in
+   release anyway. The API payload was correct all along, which is why
+   inspecting it never explained anything.
 
 3. ~~`latestviewed_screen` tap → direct playback is unverified on device.~~
    **VERIFIED on device (2026-08-13).** Tapping "Farishtalar shahri" showed
@@ -1728,12 +2000,17 @@ verified on device.)
 | ~~Decide the release asset naming~~ | — | `lib/services/update_service.dart` | Medium | **Settled** | `app-<abi>-release.apk`, the default `flutter build apk --split-per-abi` output. The atom fallback now depends on this name — renaming assets breaks it, so keep it |
 | Consider a checksum | `ota_update` supports `sha256checksum`, which would catch a truncated or tampered download | `lib/services/update_service.dart` | Low | Not started | Publish the APK's SHA-256 in the release body or as a second asset and pass it to `execute` |
 | ~~Re-check 5-qism duration~~ | Possible missing tail content | — | Low | **DONE** | Clean re-download is exactly 47:01 and decodes without errors |
-| Investigate debug-mode poster rendering | Affects development experience | `lib/widgets/poster_card.dart`, `lib/utils/image_cache_manager.dart` | Low | Not started | Compare `CachedNetworkImage` behaviour between debug and release |
+| ~~Investigate debug-mode poster rendering~~ | Affects development experience | `lib/widgets/poster_card.dart`, `lib/screens/genres_screen.dart` | Low | **DONE (2026-08-19)** | `maxWidthDiskCache` / `maxHeightDiskCache` with a non-`ImageCacheManager` cache manager trips a debug-only `assert` inside `cached_network_image`, and the thrown error lands in `errorWidget`. Both parameter pairs removed; Katalog, Sevimlilar and Janrlar all verified rendering on a debug build |
 | ~~Route `film_screen` / `films_full_screen` playback through `VideoLauncher`~~ | Duplicated `_playVideo`, no flush wait, no refresh | `lib/screens/film_screen.dart`, `lib/screens/films_full_screen.dart`, `lib/utils/video_launcher.dart` | Medium | **DONE** | Both delegate to `VideoLauncher.playWithChooser`; verified on device |
 | Verify the `getFirstEpisode` fallback | The new branch only runs for a film whose payload has no `lastSeries`, which no tested film had | `lib/services/api/films_api.dart`, `lib/screens/film_screen.dart` | Low | Not started | Find such a film in the catalogue (or stub the field out in a debug build) and confirm the button plays instead of doing nothing |
 | ~~Re-test the reported scenario on a **release** build~~ | Every part-4 measurement was made on `uz.mrlg.riyaplay.debug` | — | High | **DONE (2026-08-17)** | Rebuilt from `161d193` as an arm64 split (the universal APK is `versionCode 5` and cannot be installed over `2005`), installed, and both halves passed: new film → Back without pausing wrote `01:29`, and four play/Back cycles left the Java heap bounded (139 → 140 → 166 → 95 MB) |
 | Re-check TV channels after the disposal change | `tv_channels_screen` pushes the same player for live streams; the disposal path changed for it too, and it was not re-exercised end to end | `lib/screens/tv_channels_screen.dart` | Medium | Not started | Open a channel, watch, leave, repeat twice and check the heap |
 | Sessions shorter than 6 s are still not saved | `_minSavedSeconds = 5` is deliberate (an accidental open should not fill the row), but it does mean a very short first session leaves a `00:00` card | `lib/screens/video_player_screen.dart` | Low | By design | Revisit only if users complain about the empty card, not about the position |
+| ~~Notify on new catalogue content~~ | Feature request: "Yangi kontent mavjud", a short summary, tap opens the film | `lib/services/notification_service.dart`, `lib/services/new_content_service.dart`, `lib/services/new_content_scheduler.dart`, `lib/utils/notification_router.dart` | High | **DONE (2026-08-19)** | 5-minute timer while alive + inexact `AndroidAlarmManager.periodic` when killed, both driven by `publish_time`. Verified on device including the process-killed path — see the 2026-08-19 session |
+| Test the notification feature on a **release** build | Everything was measured on `uz.mrlg.riyaplay.debug`; release adds AOT, where a wrong `vm:entry-point` annotation fails differently | — | Medium | Not started | Build the arm64 split, kill the process and wait for one alarm cycle |
+| Verify the alarm survives a reboot | `rescheduleOnReboot: true` is set and `AlarmService: Rescheduling after boot!` was logged, but the device was never actually rebooted | `lib/services/new_content_scheduler.dart` | Low | Not started | Reboot, leave the app closed, and check `dumpsys alarm` for the `AlarmBroadcastReceiver` entry |
+| Measure the notification gap under Doze | Only the awake-device jitter is measured (5 min → ~8m45s) | — | Low | Not started | Leave the phone untouched overnight and compare the alarm's fire times |
+| ~~Sweep the remaining full-screen routes for the bottom inset~~ | Only `FilmScreen` and `FilmsFullScreen` had been fixed | `actor_films_screen`, `genres_films_screen`, `genres_screen`, `download_screen` | Medium | **DONE (2026-08-19)** | Four screens fixed with the part-7 in-scrollable spacer (`download_screen` pads outside, on purpose); five others already reserved the inset via `SafeArea` or an existing `viewPadding.bottom` and were left alone; the TV tab was checked too and needs nothing. All verified by scrolling to the end on the device |
 | Backport to `tplaytv` | That project writes the position only on exit/`WillPop`/`finished`, and its progress bars use the non-existent `film.playback_time` so they always read full | `tplaytv/lib/screens/video_player_screen.dart`, `tplaytv/lib/widgets/index/index_sections.dart`, `tplaytv/lib/screens/latestviewed_screen.dart` | Medium | Not started | Copy the 30 s periodic sync + pause write, and switch the denominator to the item's `duration` |
 
 ---
@@ -1847,6 +2124,8 @@ Modified:
 - `lib/screens/download_screen.dart` — rewritten as quality picker + queue view.
 - `lib/screens/profile_screen.dart` — "Yuklab olishlar" entry.
 - `lib/screens/genres_films_screen.dart` — `FilmCard` image fallback now tries `linkAbsolute`.
+- `lib/widgets/poster_card.dart` — 2026-08-19: `maxWidthDiskCache` / `maxHeightDiskCache` removed (debug-only `assert`; see part 3).
+- `lib/screens/genres_screen.dart` — 2026-08-19: trailing `SliverToBoxAdapter` inset spacer, and the same two resize parameters removed.
 - `lib/screens/categories_screen.dart` — `ApiErrorHandler` messages.
 - `lib/services/api_service.dart` — facade methods for the new film APIs.
 - `lib/services/api/films_api.dart` — `getEpisodeDetails`, `getWatchedSeconds`, `updateWatchProgress`, `getActorFilms`; latest-viewed `sort=-updated_at`.
@@ -1897,6 +2176,32 @@ New:
 
 ## Do Not Repeat
 
+- **Do not annotate an alarm callback as a static method.**
+  `@pragma('vm:entry-point')` on `NewContentScheduler.alarmCallback` was not
+  enough — the VM refused it with `To access '…::NewContentScheduler' from
+  native code, it must be annotated`, and the background isolate died on every
+  fire. The callback is a top-level function (`newContentAlarmCallback`) for
+  that reason. `flutter analyze` cannot see this; only killing the process and
+  waiting for the alarm can.
+- **Do not "fix" the new-content alarm for firing late.** It is inexact on
+  purpose (`exact: false`), so Android attaches a `window=+3m45s` and defers it
+  further under app-standby. Measured 2026-08-19: registered 13:52:35, fired
+  14:01:20. An exact alarm would need `SCHEDULE_EXACT_ALARM`, denied by default
+  on Android 14+; the only real fix is a server push.
+- **Do not authenticate `/v2/films/search` in the poller.** It answers HTTP 200
+  without an `Authorization` header (verified 2026-08-19), and the poller also
+  runs in a background isolate where reading `auth_token` is pure overhead.
+- **Do not read only the first row of that endpoint.** It is sorted by
+  `updated_at`, not `publish_time` — an old film that was merely edited outranks
+  a genuinely new one. The whole page is scanned against
+  `new_content_last_publish_time`.
+- **Do not use `@mipmap/launcher_icon` as the notification icon.** Android keeps
+  only the alpha channel of a small notification icon, so it renders as a white
+  block. Use `res/drawable/ic_notification.xml`.
+- **Do not `await` the notification permission before scheduling.**
+  `requestNotificationsPermission()` blocks on the Android 13+ system dialog; a
+  user who ignores it would otherwise never get an alarm registered. `start()`
+  runs first, the request second.
 - **Do not re-investigate the 404 on `Kalmar o'yini 3-qism / segment244.ts`.**
   Reproduced on a completely fresh download; it is a source-side defect and is
   already mitigated by the tail-skip rule.
@@ -2081,6 +2386,36 @@ New:
   navigation bar. `FilmScreen` and `FilmsFullScreen` were fixed on 2026-08-17
   the same way part 7 fixed home/catalog/profile: pad inside the scrollable with
   `MediaQuery.viewPadding.bottom`.
+- **Do not redo the bottom-inset sweep.** Completed 2026-08-19: every pushed
+  route plus the TV tab was read and scrolled to its end on the device.
+  `actor_films_screen`, `genres_films_screen`, `genres_screen` and
+  `download_screen` were fixed; the rest already handle it, either through a
+  `SafeArea` (whose default `bottom: true` reserves the inset) or through an
+  existing `viewPadding.bottom`. **Do not add padding to those** — doubling it
+  leaves a visible gap.
+- **Do not pass `maxWidthDiskCache` / `maxHeightDiskCache` to
+  `CachedNetworkImage` with `filmImagesCacheManager`.** That manager is a plain
+  `CacheManager`, and `cached_network_image` asserts the manager is an
+  `ImageCacheManager` whenever a resize is requested. The assert exists only in
+  debug, so the result is a poster grid full of `Icons.broken_image` in debug
+  and a perfectly normal one in release — which is exactly the "debug-only
+  poster" mystery that stood open from 2026-08-13 to 2026-08-19. Use
+  `memCacheWidth` if a size cap is wanted; it goes through `ResizeImage` and
+  needs no special manager.
+- **Do not "fix" it by mixing `ImageCacheManager` into
+  `filmImagesCacheManager`.** It would work, but `_resizeImageFile` re-encodes
+  to **PNG** while keeping the original extension, so every JPEG poster would be
+  stored twice and the resized copy would be an order of magnitude larger. The
+  parameters were inert in release, so removing them costs nothing.
+- **Do not re-investigate the debug-only poster rendering.** Cause found and
+  fixed on 2026-08-19 (part 3), verified on device across Katalog, Sevimlilar
+  and Janrlar. It was never about the API payload, `CachedNetworkImage` caching,
+  or the grid-density setting.
+- **Do not download real content to test the queue UI.** Turn "Faqat Wi-Fi
+  orqali" on while the device is on mobile data, then queue a whole series: the
+  cards render at "Wi-Fi kutilmoqda" and no bytes move. Cancel each afterwards
+  (cancelled counts as `isFinished`, so "Tozalash" clears them) and put the
+  toggle back.
 - **A chooser instead of the installer is a device quirk.** This device has
   `com.nh.aex/.InstallApk` (APKExtractor) registered for
   `ACTION_INSTALL_PACKAGE`, so Android shows `ResolverActivity` until a
@@ -2103,24 +2438,42 @@ settled and measured; see parts 4–8 and the 2026-08-17 section.
 bounded heap were both confirmed on `uz.mrlg.riyaplay` 1.0.4 / 2005. Do not
 redo it.
 
-**The working tree is clean and everything is published.** As of 2026-08-18 the
-tree is committed and pushed to `main`, and `v1.0.7` (`1.0.7+8` →
+**New-content notifications landed on 2026-08-19** and are verified on the
+device, including the case the whole feature exists for: the process killed, the
+alarm firing on its own, four notifications posted, and a tap cold-starting the
+app straight onto the film's page. What is left for them is release-build
+verification, a real reboot, and Doze timing — all three are rows in Remaining
+Work.
+
+**The bottom-inset sweep is closed** (2026-08-19, part 2). Four screens were
+fixed and five were deliberately left alone because they already reserve the
+inset; every one was scrolled to its end on the device. Do not redo it, and do
+not add padding to the five.
+
+**The debug-only poster defect is closed** (2026-08-19, part 3). It was a
+debug-only `assert` in `cached_network_image`, tripped by
+`maxWidthDiskCache` / `maxHeightDiskCache` on a cache manager that is not an
+`ImageCacheManager`. Two call sites lost those parameters
+(`lib/widgets/poster_card.dart`, `lib/screens/genres_screen.dart`) and all three
+affected surfaces were verified on the device. Release behaviour is unchanged,
+because the parameters were already being ignored there.
+
+**The working tree carries uncommitted work.** As of 2026-08-18 the
+tree was committed and pushed to `main`, and `v1.0.7` (`1.0.7+8` →
 `1008 / 2008 / 4008`) is the Latest release on `d4rk73rr0r/rplay-releases` with
 all three split APKs. `v1.0.4`, `v1.0.5` and `v1.0.6` went out too, so the old
-"Publish v1.0.4" item is closed.
+"Publish v1.0.4" item is closed. Both 2026-08-19 changes — the notifications and
+the inset sweep — are **not committed and not released**; `pubspec.yaml` is still
+`1.0.7+8`, so a release that carries them needs a bump to `1.0.8+9` first.
 
 The open list is the Medium/Low set at the end of this document:
 
-- **Sweep the remaining full-screen routes for the same bottom inset.** Only
-  `FilmScreen` and `FilmsFullScreen` were reported and fixed; the other pushed
-  routes (`actor_films_screen`, `genres_films_screen`, `download_screen`, the
-  `profile/` screens, `latestviewed_screen`, `favorites_screen`) were **not**
-  checked. Scroll each to its end on a device and look for the last row sitting
-  under the navigation bar.
-- **Debug-only poster rendering.** Re-confirmed on 2026-08-18: in a debug build
-  the Katalog and Sevimlilar grids draw broken-image icons in **both** grid
-  densities, while the release build renders them. Cause still unknown; compare
-  `CachedNetworkImage` behaviour between the two build modes.
+- ~~**Sweep the remaining full-screen routes for the same bottom inset.**~~
+  **DONE (2026-08-19)** — see part 2 of that session. Four screens were fixed,
+  five already handled it, and the TV tab was checked as well.
+- ~~**Debug-only poster rendering.**~~ **DONE (2026-08-19)** — see part 3 of
+  that session. A debug-only `assert` inside `cached_network_image`, not a
+  caching or payload problem.
 - Re-measure segment concurrency at 48, the unexercised `getFirstEpisode`
   fallback, `ApiErrorHandler` coverage in the screens that still interpolate raw
   `$e`, TV-channel playback after the disposal change, an optional SHA-256 for
