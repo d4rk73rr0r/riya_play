@@ -7,8 +7,8 @@ publish_to: 'none'
 #
 # `--split-per-abi` bilan yig'ilganda APK ichidagi versionCode ABI siljishi bilan
 # hisoblanadi: armeabi-v7a = 1000 + N, arm64-v8a = 2000 + N, x86_64 = 4000 + N.
-# Ya'ni `+8` arm64 uchun 2008 beradi (oldingi reliz 2007 dan katta).
-version: 1.0.7+8
+# Ya'ni `+9` arm64 uchun 2009 beradi (oldingi reliz 2008 dan katta).
+version: 1.0.8+9
 
 environment:
   sdk: ^3.7.2
