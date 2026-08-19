@@ -133,6 +133,37 @@ connection failures so a 404 segment isn't retried every 15 seconds forever.
 Downloaded episodes are named via `utils/episode_naming.dart`
 (`Kalmar o'yini (1-fasl, 3-qism)`) — a bare `3-qism.mp4` used to overwrite across series.
 
+### New-content notifications
+
+Four files: `services/notification_service.dart` (plugin setup, channel
+`riyaplay_new_content`, permission, `showNewContent`),
+`services/new_content_service.dart` (the detection rule),
+`services/new_content_scheduler.dart` (scheduling) and
+`utils/notification_router.dart` (tap → `FilmScreen`).
+
+Detection compares `publish_time` from
+`/v2/films/search?...&sort=-updated_at&page=1` against one `SharedPreferences`
+key (`new_content_last_publish_time`). That endpoint needs **no auth header**,
+and it is sorted by `updated_at`, not `publish_time` — an edited old film
+outranks a new one, so the whole page is scanned, not just its first row. The
+first run stores the baseline silently; at most five notifications go out per
+check.
+
+Two schedules drive the same `checkOnce()`: a `Timer.periodic(5 min)` while the
+process lives, and `AndroidAlarmManager.periodic(5 min)` for when it does not.
+The alarm is **inexact on purpose** — an exact one needs `SCHEDULE_EXACT_ALARM`,
+denied by default on Android 14+ — so Android adds a `window=+3m45s` and defers
+it further under app-standby (measured: 5 min → ~8m45s). Its callback,
+`newContentAlarmCallback`, **must stay a top-level function**: `vm:entry-point`
+on a static method makes the VM refuse it (`… must be annotated`) and the
+background isolate dies on every fire.
+
+The notification icon is `res/drawable/ic_notification.xml`, a white silhouette;
+Android discards the colours of a small notification icon, so the launcher icon
+cannot be reused. `android_alarm_manager_plus` does not declare its own
+`AlarmService` / receivers — they live in the app manifest, and the plugin needs
+AGP ≥ 8.12.1.
+
 ### Native bridge
 
 `MethodChannel('uz.mrlg.riyaplay/media_store')`, implemented in

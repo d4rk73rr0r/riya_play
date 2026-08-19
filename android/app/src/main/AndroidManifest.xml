@@ -21,6 +21,13 @@
         android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
     <uses-permission
         android:name="android.permission.WRITE_SETTINGS"/>
+    <!-- Yangi kontent tekshiruvi qurilma qayta yuklangandan keyin ham
+         qayta rejalashtirilishi uchun (`android_alarm_manager_plus`).
+         `SCHEDULE_EXACT_ALARM` ataylab yo'q: signal noaniq
+         (`exact: false`), shuning uchun Android 14+ da qo'shimcha ruxsat
+         so'rashning hojati yo'q. -->
+    <uses-permission
+        android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <!-- Ilova Play Store orqali tarqatilmaydi: yangilanish GitHub
          Releases'dan yuklanib, o'rnatish oynasi ochiladi. `ota_update`
          plagini ham shu ruxsatni e'lon qiladi, lekin bu yerda ochiq
@@ -67,6 +74,25 @@
             android:name=".DownloadService"
             android:exported="false"
             android:foregroundServiceType="dataSync"/>
+        <!-- Yangi kontent tekshiruvi: ilova yopiq bo'lganda ham 5 daqiqada
+             bir marta Dart izolyati ochilib, API'ni so'roqlaydi.
+             `android_alarm_manager_plus` bu uchtasini o'z manifestida
+             e'lon qilmaydi — ular ilova manifestida turishi shart. -->
+        <service
+            android:name="dev.fluttercommunity.plus.androidalarmmanager.AlarmService"
+            android:permission="android.permission.BIND_JOB_SERVICE"
+            android:exported="false"/>
+        <receiver
+            android:name="dev.fluttercommunity.plus.androidalarmmanager.AlarmBroadcastReceiver"
+            android:exported="false"/>
+        <receiver
+            android:name="dev.fluttercommunity.plus.androidalarmmanager.RebootBroadcastReceiver"
+            android:enabled="false"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED"/>
+            </intent-filter>
+        </receiver>
         <!-- Yangilanish APK'sini tizim o'rnatuvchisiga uzatish uchun.
              `ota_update` plagini providerni o'zi e'lon qilmaydi — uni ilova
              e'lon qilishi shart, aks holda `FileProvider.getUriForFile`

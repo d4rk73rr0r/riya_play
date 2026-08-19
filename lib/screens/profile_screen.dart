@@ -15,6 +15,8 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:riya_play/utils/grid_density.dart';
 import 'package:riya_play/utils/navigation.dart'; // createSlideRoute uchun import
+import 'package:riya_play/services/new_content_scheduler.dart';
+import 'package:riya_play/services/notification_service.dart';
 import 'package:riya_play/services/update_service.dart';
 
 class ProfileScreen extends StatefulWidget {
@@ -26,11 +28,29 @@ class ProfileScreen extends StatefulWidget {
 
 class _ProfileScreenState extends State<ProfileScreen> {
   String appVersion = "1.0.0";
+  bool _newContentNotifications = true;
 
   @override
   void initState() {
     super.initState();
     _fetchAppVersion();
+    _loadNewContentSetting();
+  }
+
+  Future<void> _loadNewContentSetting() async {
+    final enabled = await NewContentScheduler.isEnabled();
+    if (mounted) setState(() => _newContentNotifications = enabled);
+  }
+
+  /// Yangi kontent bildirishnomalarini yoqadi yoki o'chiradi.
+  ///
+  /// O'chirilganda taymer ham, tizim signali ham to'xtaydi — ya'ni ilova
+  /// yopiq turganda ham hech narsa so'ralmaydi.
+  Future<void> _toggleNewContentNotifications() async {
+    final enabled = !_newContentNotifications;
+    setState(() => _newContentNotifications = enabled);
+    await NewContentScheduler.setEnabled(enabled);
+    if (enabled) await NotificationService.requestPermission();
   }
 
   Future<void> _fetchAppVersion() async {
@@ -73,6 +93,9 @@ class _ProfileScreenState extends State<ProfileScreen> {
     }
 
     try {
+      // Yangi kontent signali foydalanuvchidan mustaqil yashaydi — chiqishda
+      // uni to'xtatmasak, tizimda kirmagan holatda ham bildirishnoma kelardi.
+      await NewContentScheduler.stop();
       await ApiService.logout();
       final prefs = await SharedPreferences.getInstance();
       await prefs.clear();
@@ -311,6 +334,13 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     value:
                         Provider.of<GridDensityProvider>(context).label,
                     onTap: _showGridDensityDialog,
+                  ),
+                  _buildListTile(
+                    context,
+                    icon: IconlyLight.notification,
+                    title: "Yangi kontent bildirishnomasi",
+                    value: _newContentNotifications ? "Yoqilgan" : "O'chirilgan",
+                    onTap: _toggleNewContentNotifications,
                   ),
                   _buildListTile(
                     context,

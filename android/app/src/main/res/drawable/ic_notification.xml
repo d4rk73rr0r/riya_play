@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Status-bar icon for notifications.
+
+    Android 5.0+ throws away every colour in a small notification icon and
+    keeps only the alpha channel, so the launcher icon cannot be reused here —
+    it would render as a solid white square. This is a flat white silhouette
+    (a play triangle inside a rounded frame) with transparent padding, which is
+    what the platform expects.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M18,3H6C4.34,3 3,4.34 3,6v12c0,1.66 1.34,3 3,3h12c1.66,0 3,-1.34 3,-3V6C21,4.34 19.66,3 18,3zM10,16.5v-9l6,4.5L10,16.5z" />
+</vector>

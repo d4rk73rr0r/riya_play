@@ -8,6 +8,8 @@ import 'package:riya_play/screens/tv_channels_screen.dart';
 import 'package:riya_play/screens/favorites_screen.dart';
 import 'package:riya_play/screens/profile_screen.dart';
 import 'package:riya_play/services/download_manager.dart';
+import 'package:riya_play/services/new_content_scheduler.dart';
+import 'package:riya_play/services/notification_service.dart';
 import 'package:riya_play/services/update_service.dart';
 import 'package:riya_play/theme_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -18,6 +20,7 @@ import 'package:flutter_native_splash/flutter_native_splash.dart';
 import 'package:riya_play/theme/glass.dart';
 import 'package:riya_play/utils/app_logger.dart';
 import 'package:riya_play/utils/grid_density.dart';
+import 'package:riya_play/utils/notification_router.dart';
 import 'package:riya_play/utils/system_ui.dart';
 import 'package:riya_play/widgets/glass_bottom_bar.dart';
 
@@ -55,6 +58,13 @@ void main() async {
   // 2 ustunda chizilib, keyin 3 ga sakraydi.
   final gridDensity = GridDensityProvider();
   await gridDensity.load();
+  // Bildirishnomalar `runApp` dan oldin sozlanadi: ilova bildirishnoma
+  // bosilishi tufayli ochilgan bo'lsa, payload birinchi kadrdan oldin
+  // o'qilishi kerak — aks holda `MainScreen` "meni ochishdi" degan xabarni
+  // olmay qoladi.
+  await NotificationService.init(onTap: NotificationRouter.handleResponse);
+  final launchFilmId = await NotificationService.pendingLaunchFilmId();
+  if (launchFilmId != null) NotificationRouter.open(launchFilmId);
   runApp(
     MultiProvider(
       providers: [
@@ -116,6 +126,7 @@ class _RiyaPlayAppState extends State<RiyaPlayApp> {
     return MaterialApp(
       title: 'RiyaPlay',
       debugShowCheckedModeBanner: false,
+      navigatorKey: appNavigatorKey,
       navigatorObservers: [routeObserver],
       theme: _buildDarkTheme(),
       darkTheme: _buildDarkTheme(),
@@ -203,7 +214,12 @@ class _MainScreenState extends State<MainScreen>
     // Yangilanish tekshiruvi bosh ekran chizilgandan keyin — ochilishni
     // sekinlashtirmaydi va xato bo'lsa jim o'tadi.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) UpdateService.checkOnStartup(context);
+      if (!mounted) return;
+      UpdateService.checkOnStartup(context);
+      // Navigator endi tayyor: bildirishnoma bosilishi tufayli ochilgan
+      // bo'lsak, o'sha film sahifasi shu yerda ochiladi.
+      NotificationRouter.markNavigatorReady();
+      _startNewContentWatch();
     });
     _tabController = TabController(length: _screens.length, vsync: this);
     _tabController.addListener(() {
@@ -215,9 +231,25 @@ class _MainScreenState extends State<MainScreen>
     });
   }
 
+  /// Yangi kontent kuzatuvi shu yerdan boshlanadi — ya'ni faqat tizimga
+  /// kirgan foydalanuvchi uchun. Bildirishnoma bosilganda ochiladigan film
+  /// sahifasi tokensiz yuklanmaydi, shuning uchun `AuthScreen` da kuzatuvni
+  /// yoqishning ma'nosi yo'q.
+  Future<void> _startNewContentWatch() async {
+    // Rejalashtirish ruxsat so'rashdan **oldin**: Android 13+ da so'rov tizim
+    // oynasini ochadi va `await` foydalanuvchi javob berguncha turib qoladi.
+    // Ruxsatni kutib qolsak, oynani e'tiborsiz qoldirgan foydalanuvchida
+    // signal umuman ro'yxatdan o'tmasdi.
+    await NewContentScheduler.start();
+    // Rad etilsa ham kuzatuv qoladi: keyinroq tizim sozlamalaridan ruxsat
+    // berilsa, ilovani qayta ishga tushirmasdan xabarlar kela boshlaydi.
+    await NotificationService.requestPermission();
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    NotificationRouter.markNavigatorGone();
     _tabController.dispose();
     super.dispose();
   }

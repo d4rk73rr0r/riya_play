@@ -107,6 +107,9 @@ class ApiService {
 
   static Future<List<dynamic>> getBanners() => FilmsApi.getBanners();
 
+  static Future<List<dynamic>> getLatestPublished({int page = 1}) =>
+      FilmsApi.getLatestPublished(page: page);
+
   static Future<Map<String, dynamic>> getLatestViewed({
     int page = 1,
     int perPage = 20,

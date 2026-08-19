@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:riya_play/screens/auth_screen.dart';
 import 'package:riya_play/services/api_service.dart';
+import 'package:riya_play/services/new_content_scheduler.dart';
 import 'package:provider/provider.dart';
 import 'package:riya_play/theme_provider.dart';
 import 'package:riya_play/utils/app_logger.dart';
@@ -89,6 +90,9 @@ class ServerErrorPage extends StatelessWidget {
 
   Future<void> _logout(BuildContext context) async {
     try {
+      // Chiqishda yangi kontent signali ham to'xtaydi, aks holda tizimga
+      // kirmagan qurilmaga bildirishnoma kelib turardi.
+      await NewContentScheduler.stop();
       await ApiService.logout();
       Navigator.pushAndRemoveUntil(
         context,

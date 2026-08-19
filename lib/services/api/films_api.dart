@@ -28,6 +28,26 @@ class FilmsApi {
     return response['data'] ?? [];
   }
 
+  /// Newest catalog rows, sorted by `updated_at`, for the new-content poller.
+  ///
+  /// Deliberately **not** authenticated: the poller also runs from the alarm
+  /// isolate, where reading `auth_token` would only add a `SharedPreferences`
+  /// round trip — this endpoint answers without a token. `_t` defeats the CDN
+  /// cache, the same trick [getLatestViewed] uses.
+  static Future<List<dynamic>> getLatestPublished({int page = 1}) async {
+    final url =
+        "${ApiClient.baseUrl}/v2/films/search"
+        "?include=files,paid,tags,genres,holder.logo&_l=uz&_f=json"
+        "&t=${DateTime.now().millisecondsSinceEpoch}"
+        "&sort=-updated_at&page=$page";
+
+    final response = await ApiClient.sendRequest(url: url);
+
+    if (response is! Map || response['success'] == false) return [];
+    final data = response['data'];
+    return data is List ? data : [];
+  }
+
   static Future<Map<String, dynamic>> getFilmDetails(int filmId) async {
     final prefs = await SharedPreferences.getInstance();
     final authToken = prefs.getString('auth_token') ?? '';
