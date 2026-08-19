@@ -195,6 +195,31 @@ posters render as broken-image icons in *both* densities. That is the
 pre-existing debug-only poster defect already tracked in Remaining Bugs; the
 release build renders them.
 
+#### Releases and the GitHub outage
+
+| Tag | Version | versionCode (v7a / arm64 / x86_64) | Published (UTC) | Contents |
+| --- | --- | --- | --- | --- |
+| `v1.0.5` | `1.0.5+6` | 1006 / 2006 / 4006 | 2026-08-17 13:25 | navigation-bar insets, episode-card overflow |
+| `v1.0.6` | `1.0.6+7` | 1007 / 2007 / 4007 | 2026-08-18 06:05 | one-card continue-watching update, release-notes scrollbar |
+| `v1.0.7` | `1.0.7+8` | 1008 / 2008 / 4008 | 2026-08-18 08:34 | card captions, 2x2 / 3x3 grid density |
+
+`v1.0.6` did not publish on the first two tries: `gh` returned
+`HTTP 503: No server is currently available` from
+`api.github.com/repos/.../releases`, and even `gh release list` failed. GitHub's
+status page showed an incident (API Requests degraded from 14:58 UTC the day
+before, ~20 % error rate). Nothing was wrong with the command. Two things to
+remember when it happens again:
+
+- **`gh release create` can leave an orphan draft behind.** Two failed attempts
+  logged `cleaning up draft failed`, i.e. release objects `371801196` and
+  `371801748` were created and could not be removed. A retry must therefore look
+  for an existing `v1.0.x` release first (`gh api repos/OWNER/REPO/releases`)
+  and finish it with `gh release upload --clobber` +
+  `gh release edit --draft=false --latest`, rather than blindly creating another.
+- The publishing tool is the GitHub CLI at `C:\Program Files\GitHub CLI\gh.exe`,
+  authenticated as `d4rk73rr0r` with `repo` scope. It is **not** on `PATH` in
+  this environment's shell; call it by full path.
+
 #### "Ko'rishni davom ettirish" no longer refetches the whole list
 
 Returning from the player used to run `_pagination.refresh()` in
@@ -1693,6 +1718,8 @@ verified on device.)
 | ~~Find out where `versionCode=2004` comes from~~ | — | `pubspec.yaml` | Medium | **DONE (2026-08-16)** | Flutter's `--split-per-abi` ABI offset (`arm64 = 2000 + N`). `pubspec.yaml` was always the only source; version is now `1.0.4+5` → arm64 `2005` |
 | ~~Publish `v1.0.4`~~ | Built and verified locally, not uploaded | — | Medium | **DONE** | `v1.0.4` was published to `d4rk73rr0r/rplay-releases` on 2026-08-17 06:28 UTC with all three split APKs — the "not started" note above it was stale. Superseded by `v1.0.5` |
 | ~~Publish `v1.0.5`~~ | — | `pubspec.yaml` | Medium | **DONE (2026-08-17)** | Published to `d4rk73rr0r/rplay-releases` at 13:25 UTC with all three split APKs (`gh release create`), and the OTA check on the device's `1.0.4 / 2005` install answered "Yangi versiya mavjud — Versiya 1.0.5 · 45.2 MB" |
+| ~~Publish `v1.0.6`~~ | Carries the continue-watching single-card update and the release-notes scrollbar | `pubspec.yaml` | Medium | **DONE (2026-08-18)** | `1.0.6+7` → `1006 / 2006 / 4006`, published 06:05 UTC. The first attempts failed with `HTTP 503` during a GitHub-wide incident, not through any fault of the command — see the note in the 2026-08-18 session |
+| ~~Publish `v1.0.7`~~ | Carries the card captions and the grid-density setting | `pubspec.yaml` | Medium | **DONE (2026-08-18)** | `1.0.7+8` → `1008 / 2008 / 4008`, published 08:34 UTC, Latest, all three assets `uploaded` |
 | The update dialog's release notes look truncated | Long notes stop mid-sentence at the bottom of the box, with no visible scrollbar or fade | `lib/services/update_service.dart` | Low | **Not a defect** | The notes already sit in `ConstrainedBox(maxHeight: 160)` + `SingleChildScrollView` and scroll fine — confirmed by hand on the `v1.0.5` dialog. Only the affordance is missing; add a `Scrollbar` or a bottom fade if it is worth it |
 | **Find the idle ~120 fps redraw on the home tab** | Measured, cause not isolated; the ring animation was ruled out | `lib/screens/index_screen.dart` | Medium | Not started | DevTools timeline on a profile build while the home tab sits untouched |
 | **Measure memory over navigation cycles** | Not covered by the audit | — | Medium | **Partly done (2026-08-17)** | The player half is measured on release: four play → Back cycles, Java heap 139 → 140 → 166 → 95 MB, bounded. Still unmeasured: Home → Catalog → FilmScreen cycles without playback, and TV channels |
@@ -2010,6 +2037,15 @@ New:
   in a 160 px `ConstrainedBox` with a `SingleChildScrollView` and have always
   scrolled; as of 2026-08-17 they also carry a `Scrollbar` and a bottom fade
   (`_ReleaseNotes`), so nothing about them is broken.
+- **Do not look for `gh` on `PATH`.** The GitHub CLI is installed at
+  `C:\Program Files\GitHub CLI\gh.exe` (authenticated as `d4rk73rr0r`, `repo`
+  scope) but the shell in this environment does not pick it up; call it by full
+  path. Releases go to `d4rk73rr0r/rplay-releases`, source to
+  `d4rk73rr0r/riya_play`.
+- **Do not retry `gh release create` blindly after an HTTP 5xx.** A failed
+  create can leave an orphan draft with the same tag, and `gh` may fail to clean
+  it up. Look for the existing release first, then `gh release upload
+  --clobber` + `gh release edit --draft=false --latest`.
 - **Do not hard-code `crossAxisCount: 2` (or `/ 2` for a row's item width)
   again.** The column count is a user setting — `GridDensityProvider.columns`
   in `lib/utils/grid_density.dart`, chosen in Profil as 2x2 / 3x3. The home
@@ -2067,26 +2103,34 @@ settled and measured; see parts 4–8 and the 2026-08-17 section.
 bounded heap were both confirmed on `uz.mrlg.riyaplay` 1.0.4 / 2005. Do not
 redo it.
 
-The working tree now carries **uncommitted** changes: the navigation-bar insets
-on `film_screen.dart` / `films_full_screen.dart` and the `_episodeCardHeight`
-overflow fix. Committing them is the immediate next action.
+**The working tree is clean and everything is published.** As of 2026-08-18 the
+tree is committed and pushed to `main`, and `v1.0.7` (`1.0.7+8` →
+`1008 / 2008 / 4008`) is the Latest release on `d4rk73rr0r/rplay-releases` with
+all three split APKs. `v1.0.4`, `v1.0.5` and `v1.0.6` went out too, so the old
+"Publish v1.0.4" item is closed.
 
-After that, the open list is the Medium/Low set at the end of this document:
+The open list is the Medium/Low set at the end of this document:
 
-- **Publish `v1.0.4`.** Built locally (arm64 verified today); the release
-  binaries in `build/app/outputs/flutter-apk/` predate `161d193`, so rebuild all
-  three ABIs before uploading.
 - **Sweep the remaining full-screen routes for the same bottom inset.** Only
   `FilmScreen` and `FilmsFullScreen` were reported and fixed; the other pushed
   routes (`actor_films_screen`, `genres_films_screen`, `download_screen`, the
   `profile/` screens, `latestviewed_screen`, `favorites_screen`) were **not**
   checked. Scroll each to its end on a device and look for the last row sitting
   under the navigation bar.
+- **Debug-only poster rendering.** Re-confirmed on 2026-08-18: in a debug build
+  the Katalog and Sevimlilar grids draw broken-image icons in **both** grid
+  densities, while the release build renders them. Cause still unknown; compare
+  `CachedNetworkImage` behaviour between the two build modes.
 - Re-measure segment concurrency at 48, the unexercised `getFirstEpisode`
-  fallback, the debug-only actor posters, `ApiErrorHandler` coverage, TV-channel
-  playback after the disposal change, an optional SHA-256 for the OTA download,
-  the install-flow repeat on a release build, and the `tplaytv` backport
-  (periodic sync + `duration` denominator).
+  fallback, `ApiErrorHandler` coverage in the screens that still interpolate raw
+  `$e`, TV-channel playback after the disposal change, an optional SHA-256 for
+  the OTA download, the install-flow repeat on a release build, and the
+  `tplaytv` backport (periodic sync + `duration` denominator).
+- Optional, and deliberately not done: the grid-density setting was applied to
+  the home rows, Katalog, Sevimlilar and the skeleton only. The other grids
+  (`genres_films_screen`, `categories_screen`, `actor_films_screen`,
+  `recommended_films_screen`, `profile/history_screen`) still hard-code two
+  columns, because the request named only those three surfaces.
 
 The idle ~120 fps question is **not** on this list any more — part 6 found and
 fixed it (the banner ring's `AnimationController` ticking for off-screen tabs).
