@@ -264,6 +264,168 @@ queue-rendering question.
 
 `flutter analyze lib`: 5 pre-existing infos, the unchanged baseline.
 
+### Session of 2026-08-19, part 4 — the six remaining Medium/Low items
+
+Every open item on the Medium/Low list except the release-build repeats was
+closed in one pass. Five needed code, two needed the device, and one overturned
+a claim this document had carried since 2026-08-13.
+
+#### 1. Segment concurrency at 48 — measured at last
+
+Raised from 24 by the owner's decision on 2026-08-16 and never re-measured. Run
+on the same device, on **mobile data (4G+)** at the owner's explicit choice
+(Wi-Fi was off), downloading the same reference episode used before:
+`Kalmar o'yini (1-fasl, 5-qism)` at 720p.
+
+```
+Yuklash profili: jami 41.0s, 448.0 MB
+  tarmoq  39.2s (96%) -> 11.44 MB/s
+  deshifr 0.0s (0%)
+  yozish  1.1s (3%)
+  saqlash 0.7s (2%)
+  haqiqiy tezlik 10.94 MB/s
+```
+
+| Concurrency | Effective | Network-only | Stability |
+| --- | --- | --- | --- |
+| 10 | 5.55 MB/s | — | — |
+| 24 | 9.11 MB/s | — | no restart |
+| **48** | **10.94 MB/s** | 11.44 MB/s | **no restart** — same pid (29594) before, during and after |
+
+The 2026-08-13 restart that made 48 suspect did **not** reproduce: the process
+survived the whole transfer, and `Stop FGS timeout` on `DownloadService` at the
+end is the normal service teardown. The written file is **436,429,687 bytes** —
+byte-for-byte the size of the clean 2026-08-13 download of the same episode, so
+nothing was lost at the higher concurrency. 48 stays.
+
+Caveat worth keeping: on 4G+ the network leg is 96 % of wall time, so this
+measures a mobile link as much as the CDN. It does not follow that 96 would be
+better; it follows that 48 is not worse than 24 and does not destabilise the app.
+
+**Test artefact left on the device**: `/sdcard/Movies/RiyaPlay/Kalmar o'yini
+(1-fasl, 5-qism) (1).mp4`, a 436 MB duplicate of the file already there.
+
+#### 2. `getFirstEpisode` fallback — exercised by ablation
+
+The branch only runs for a film whose payload has no usable `lastSeries.track`,
+and **no such film exists in the catalogue**: 170 films were probed directly
+(the 20 most recently updated plus the 150 oldest by `publish_time`) and every
+one came back with a populated `lastSeries` and a non-empty `track`.
+
+So the field was ablated instead: `_playSingleFilm` was patched to read an empty
+`lastSeries`, a debug build was installed, and `Karantindagi qiz` was opened.
+"Ko'rishni boshlash" produced the player chooser (not "Film uchun video mavjud
+emas"), and the internal player played the film. The endpoint behind it answers
+correctly on its own too:
+
+```
+GET /v1/series?filter[film_id]=17549&per-page=1&include=track   -> 200
+{"data":[{"id":195946, ... }]}   + track[0].stream_url
+```
+
+The ablation was reverted with `git checkout --` and a clean debug build
+reinstalled.
+
+#### 3. `ApiErrorHandler` in the screens that still printed `$e`
+
+Fourteen files. The rule applied: a **user-visible** string never interpolates
+the raw exception; `appLogger` calls keep it, because that is where it belongs.
+
+The highest-leverage change is `lib/utils/pagination_controller.dart` — every
+infinite-scroll screen renders its `error` field, so one line covers all of
+them. `index_screen`'s `_fetchData` is the second funnel: it is the single place
+where both `success: false` payloads and thrown exceptions become the provider's
+error string, so classification moved in there and the widgets that used to
+prefix `"Xato: $error"` now render the message as-is.
+
+`ApiErrorHandler._fromStatus` became public as `fromStatus`, because
+`sendRequest` never throws — a caller reading its map has a status code and no
+exception to hand to `handle`.
+
+Two sites deliberately do **not** go through the handler: launching an external
+player via `AndroidIntent` (`video_launcher`, `tv_channels_screen`) is not an API
+failure, and the intent error's `toString()` tells the user nothing, so they
+carry a fixed sentence. One site gained an `ErrorInfo` throw instead — the
+"stream URL missing" case in `tv_channels_screen`, since `handle` returns an
+`ErrorInfo` unchanged and the specific wording survives.
+
+#### 4. SHA-256 for the OTA download
+
+`ota_update`'s `execute` already accepts `sha256checksum`, and
+`OtaStatus.CHECKSUM_ERROR` was already handled in `_onEvent` — the checksum was
+simply never supplied.
+
+**No second asset is needed.** The GitHub releases API returns the digest on the
+asset itself:
+
+```json
+"name": "app-arm64-v8a-release.apk",
+"digest": "sha256:88fcbd50d9d166d78639d4e2b1d600abf44b7a45cd1898c3cdfad1f3d31055a9"
+```
+
+Verified against the local build: `sha256sum` of
+`app-arm64-v8a-release.apk` is exactly `88fcbd50…55a9`. `_pickApk` now strips the
+`sha256:` prefix into `_ApkAsset.sha256`, `UpdateInfo` carries it, and
+`_download()` passes it. The **atom fallback leaves it null** — that path has no
+asset list at all — and null means "no verification", which is the previous
+behaviour, not a regression.
+
+Not yet exercised at runtime: it needs a release newer than the installed one,
+so it will be proved by the next OTA test.
+
+#### 5. TV channels after the disposal change — SpecUZ
+
+Source switched to **SpecUZ** as requested (143 channels), channel
+`Кинопремьера`, internal player, ~25 s each, three open → Back cycles:
+
+| Point | Java Heap | Native Heap | TOTAL PSS |
+| --- | --- | --- | --- |
+| before any playback | 14.5 MB | 97.6 MB | 927 MB |
+| after cycle 1 | 31.1 MB | 115.6 MB | 1079 MB |
+| after cycle 2 | 30.6 MB | 112.1 MB | 982 MB |
+| after cycle 3 | 29.2 MB | 121.1 MB | 1077 MB |
+| settled | 31.0 MB | 108.5 MB | 1052 MB |
+
+Bounded — it rises once for the first player and then oscillates. The Bug 17
+leak was ~155 MB **per session** and monotonic, so it is not present on the live
+path. The app stayed on `MainActivity` throughout.
+
+#### 6. `tplaytv` backport — and a payload claim this document had wrong
+
+Ported into `D:\Android\Projects\tplaytv`:
+
+| File | Change |
+| --- | --- |
+| `lib/utils/latest_viewed.dart` | **new** — `latestViewedEpisodeId` / `FilmId` / `Seconds` / `Duration` / `Progress` |
+| `lib/screens/video_player_screen.dart` | 30 s periodic sync driven off `progress`, a write on `pause`, de-duplication (`_lastSyncedSeconds` / `_writingSeconds`), `_minSavedSeconds = 5`, and a `_finishHandled` guard with `Navigator.canPop` |
+| `lib/widgets/index/index_sections.dart`, `lib/screens/latestviewed_screen.dart` | progress from `latestViewedProgress(item)` instead of `film['playback_time'] ?? 1` |
+| `lib/services/api_service.dart` + the screen's own `fields` | `duration` added to both `fields` lists |
+
+`flutter analyze lib` in tplaytv: **No issues found**. Not exercised on a TV
+device — only the phone was attached.
+
+**The correction.** "Important Discoveries" #3 said `film.playback_time` does
+not exist in the latest-viewed payload and that the item's own `duration` must
+be used. Measured against the live API on 2026-08-19, **both exist**, and which
+one arrives depends on the request:
+
+| Request | `duration` (item, seconds) | `film.playback_time` (minutes) |
+| --- | --- | --- |
+| no `fields` parameter | **6585** | **110** |
+| `fields=` the app's usual list | absent | **110** |
+| `fields=duration,…` | **6585** | **110** |
+
+`fields` prunes top-level item keys but not included relations, which is why
+`playback_time` survives every variant. Both apps' `fields` lists omitted
+`duration`, so riya_play has in fact been running on its `playback_time * 60`
+fallback all along — correct, just rounded to the minute. tplaytv's real defect
+was never the field choice: it was the `?? 1` fallback, which turns the
+denominator into 60 seconds whenever the field is missing and paints a full bar
+for any position past a minute.
+
+`duration` is now requested in tplaytv so the exact value is used. riya_play was
+left alone here — it is outside what was asked, and its fallback is correct.
+
 ### Session of 2026-08-19, part 3 — the debug-only broken posters, explained
 
 The open item at the top of the Medium/Low list, carried since 2026-08-13 with
@@ -1997,23 +2159,24 @@ verified on device.)
 | The update dialog's release notes look truncated | Long notes stop mid-sentence at the bottom of the box, with no visible scrollbar or fade | `lib/services/update_service.dart` | Low | **Not a defect** | The notes already sit in `ConstrainedBox(maxHeight: 160)` + `SingleChildScrollView` and scroll fine — confirmed by hand on the `v1.0.5` dialog. Only the affordance is missing; add a `Scrollbar` or a bottom fade if it is worth it |
 | **Find the idle ~120 fps redraw on the home tab** | Measured, cause not isolated; the ring animation was ruled out | `lib/screens/index_screen.dart` | Medium | Not started | DevTools timeline on a profile build while the home tab sits untouched |
 | **Measure memory over navigation cycles** | Not covered by the audit | — | Medium | **Partly done (2026-08-17)** | The player half is measured on release: four play → Back cycles, Java heap 139 → 140 → 166 → 95 MB, bounded. Still unmeasured: Home → Catalog → FilmScreen cycles without playback, and TV channels |
-| **Re-measure segment concurrency at 48** | Raised from 24 by the owner's decision without a new measurement | `lib/services/download_service.dart` | Medium | Not started | Download one ~450 MB episode and compare throughput and stability against the recorded 24 → 9.11 MB/s effective |
+| ~~**Re-measure segment concurrency at 48**~~ | Raised from 24 by the owner's decision without a new measurement | `lib/services/download_service.dart` | Medium | **DONE (2026-08-19)** | 448 MB in 41.0 s on 4G+: **10.94 MB/s effective**, 11.44 MB/s network-only, against 9.11 MB/s at 24. No app restart, same pid throughout, and the file is byte-identical (436,429,687 B) to the clean 2026-08-13 download. 48 stays |
 | **Run the install-flow tests on a release build** | Every part-2 result was measured on `uz.mrlg.riyaplay.debug` | — | Medium | Not started | Same four scenarios against `uz.mrlg.riyaplay` once a newer release exists to offer |
 | ~~Decide the release asset naming~~ | — | `lib/services/update_service.dart` | Medium | **Settled** | `app-<abi>-release.apk`, the default `flutter build apk --split-per-abi` output. The atom fallback now depends on this name — renaming assets breaks it, so keep it |
-| Consider a checksum | `ota_update` supports `sha256checksum`, which would catch a truncated or tampered download | `lib/services/update_service.dart` | Low | Not started | Publish the APK's SHA-256 in the release body or as a second asset and pass it to `execute` |
+| ~~Consider a checksum~~ | `ota_update` supports `sha256checksum`, which would catch a truncated or tampered download | `lib/services/update_service.dart` | Low | **DONE (2026-08-19)** | No extra asset needed — the releases API returns `"digest": "sha256:<hex>"` per asset, verified equal to the local build's `sha256sum`. `_pickApk` reads it into `_ApkAsset.sha256`, `UpdateInfo` carries it and `_download()` passes it; the atom fallback leaves it null. Runtime proof waits for the next OTA test |
 | ~~Re-check 5-qism duration~~ | Possible missing tail content | — | Low | **DONE** | Clean re-download is exactly 47:01 and decodes without errors |
 | ~~Investigate debug-mode poster rendering~~ | Affects development experience | `lib/widgets/poster_card.dart`, `lib/screens/genres_screen.dart` | Low | **DONE (2026-08-19)** | `maxWidthDiskCache` / `maxHeightDiskCache` with a non-`ImageCacheManager` cache manager trips a debug-only `assert` inside `cached_network_image`, and the thrown error lands in `errorWidget`. Both parameter pairs removed; Katalog, Sevimlilar and Janrlar all verified rendering on a debug build |
 | ~~Route `film_screen` / `films_full_screen` playback through `VideoLauncher`~~ | Duplicated `_playVideo`, no flush wait, no refresh | `lib/screens/film_screen.dart`, `lib/screens/films_full_screen.dart`, `lib/utils/video_launcher.dart` | Medium | **DONE** | Both delegate to `VideoLauncher.playWithChooser`; verified on device |
-| Verify the `getFirstEpisode` fallback | The new branch only runs for a film whose payload has no `lastSeries`, which no tested film had | `lib/services/api/films_api.dart`, `lib/screens/film_screen.dart` | Low | Not started | Find such a film in the catalogue (or stub the field out in a debug build) and confirm the button plays instead of doing nothing |
+| ~~Verify the `getFirstEpisode` fallback~~ | The new branch only runs for a film whose payload has no `lastSeries`, which no tested film had | `lib/services/api/films_api.dart`, `lib/screens/film_screen.dart` | Low | **DONE (2026-08-19)** | No such film exists — 170 probed, all had `lastSeries.track`. Verified by ablating the field in a debug build: "Ko'rishni boshlash" on `Karantindagi qiz` reached the chooser and played. Ablation reverted |
 | ~~Re-test the reported scenario on a **release** build~~ | Every part-4 measurement was made on `uz.mrlg.riyaplay.debug` | — | High | **DONE (2026-08-17)** | Rebuilt from `161d193` as an arm64 split (the universal APK is `versionCode 5` and cannot be installed over `2005`), installed, and both halves passed: new film → Back without pausing wrote `01:29`, and four play/Back cycles left the Java heap bounded (139 → 140 → 166 → 95 MB) |
-| Re-check TV channels after the disposal change | `tv_channels_screen` pushes the same player for live streams; the disposal path changed for it too, and it was not re-exercised end to end | `lib/screens/tv_channels_screen.dart` | Medium | Not started | Open a channel, watch, leave, repeat twice and check the heap |
+| ~~Re-check TV channels after the disposal change~~ | `tv_channels_screen` pushes the same player for live streams; the disposal path changed for it too | `lib/screens/tv_channels_screen.dart` | Medium | **DONE (2026-08-19)** | SpecUZ source, `Кинопремьера`, three open → ~25 s → Back cycles. Java heap 14.5 → 31.1 → 30.6 → 29.2 MB, settling at 31.0. Bounded, no monotonic growth; app stayed on `MainActivity` |
 | Sessions shorter than 6 s are still not saved | `_minSavedSeconds = 5` is deliberate (an accidental open should not fill the row), but it does mean a very short first session leaves a `00:00` card | `lib/screens/video_player_screen.dart` | Low | By design | Revisit only if users complain about the empty card, not about the position |
 | ~~Notify on new catalogue content~~ | Feature request: "Yangi kontent mavjud", a short summary, tap opens the film | `lib/services/notification_service.dart`, `lib/services/new_content_service.dart`, `lib/services/new_content_scheduler.dart`, `lib/utils/notification_router.dart` | High | **DONE (2026-08-19)** | 5-minute timer while alive + inexact `AndroidAlarmManager.periodic` when killed, both driven by `publish_time`. Verified on device including the process-killed path — see the 2026-08-19 session |
 | Test the notification feature on a **release** build | Everything was measured on `uz.mrlg.riyaplay.debug`; release adds AOT, where a wrong `vm:entry-point` annotation fails differently | — | Medium | Not started | Build the arm64 split, kill the process and wait for one alarm cycle |
 | Verify the alarm survives a reboot | `rescheduleOnReboot: true` is set and `AlarmService: Rescheduling after boot!` was logged, but the device was never actually rebooted | `lib/services/new_content_scheduler.dart` | Low | Not started | Reboot, leave the app closed, and check `dumpsys alarm` for the `AlarmBroadcastReceiver` entry |
 | Measure the notification gap under Doze | Only the awake-device jitter is measured (5 min → ~8m45s) | — | Low | Not started | Leave the phone untouched overnight and compare the alarm's fire times |
 | ~~Sweep the remaining full-screen routes for the bottom inset~~ | Only `FilmScreen` and `FilmsFullScreen` had been fixed | `actor_films_screen`, `genres_films_screen`, `genres_screen`, `download_screen` | Medium | **DONE (2026-08-19)** | Four screens fixed with the part-7 in-scrollable spacer (`download_screen` pads outside, on purpose); five others already reserved the inset via `SafeArea` or an existing `viewPadding.bottom` and were left alone; the TV tab was checked too and needs nothing. All verified by scrolling to the end on the device |
-| Backport to `tplaytv` | That project writes the position only on exit/`WillPop`/`finished`, and its progress bars use the non-existent `film.playback_time` so they always read full | `tplaytv/lib/screens/video_player_screen.dart`, `tplaytv/lib/widgets/index/index_sections.dart`, `tplaytv/lib/screens/latestviewed_screen.dart` | Medium | Not started | Copy the 30 s periodic sync + pause write, and switch the denominator to the item's `duration` |
+| ~~Backport to `tplaytv`~~ | That project wrote the position only on exit/`WillPop`/`finished`, and its progress bars divided by `film['playback_time'] ?? 1` | `tplaytv/lib/screens/video_player_screen.dart`, `tplaytv/lib/widgets/index/index_sections.dart`, `tplaytv/lib/screens/latestviewed_screen.dart`, `tplaytv/lib/utils/latest_viewed.dart`, `tplaytv/lib/services/api_service.dart` | Medium | **DONE (2026-08-19)** | 30 s periodic sync, a `pause` write, write de-duplication, a `_finishHandled` guard, the shared `latest_viewed.dart` helper and `duration` added to both `fields` lists. `flutter analyze lib`: no issues. **Not exercised on a TV device** — only the phone was attached. The `?? 1`, not the field choice, was the real defect; see the corrected Important Discovery #3 |
+| Test the tplaytv backport on a TV device | All of it is static-analysis-clean but unrun | `tplaytv/` | Medium | Not started | Install on the Android TV box, watch ~1 minute, leave, and confirm the position and the progress bar |
 
 ---
 
@@ -2028,8 +2191,9 @@ verified on device.)
   `films_full_screen.dart` contain near-identical copies (URL validation,
   resume dialog, player choice). `lib/utils/video_launcher.dart` is the
   natural home; the TV project already did this.
-- **Wire `ApiErrorHandler` into the remaining screens.** Only three screens
-  use it; `catalog_screen.dart` and others still interpolate raw `$e`.
+- ~~**Wire `ApiErrorHandler` into the remaining screens.**~~ **DONE
+  (2026-08-19)** — fourteen files, with `pagination_controller` and
+  `index_screen._fetchData` as the two funnels that cover most screens.
 
 ### Optional
 
@@ -2073,8 +2237,16 @@ verified on device.)
    map with `success: false`. Callers must check the payload shape.
 2. **`second.film_id` is an episode id**, not a film id — the sibling `model`
    field says `common\models\Series`.
-3. **`film.playback_time` does not exist** in the latest-viewed payload. Use
-   the item's own `duration` (seconds).
+3. **`film.playback_time` and the item's `duration` both exist** in the
+   latest-viewed payload — the earlier claim that `playback_time` is absent was
+   wrong, and was corrected on 2026-08-19 by measuring the live API. `duration`
+   is the item's exact length in **seconds** and only arrives when the request's
+   `fields` list names it; `film.playback_time` is the same length rounded to
+   **minutes** and survives every `fields` variant, because `fields` prunes
+   top-level keys but not included relations. Measured on the same row: 6585 s
+   vs 110 min. Prefer `duration`, fall back to `playback_time * 60`, and never
+   fall back to a bare `1` — that makes the denominator 60 seconds and paints a
+   full bar for anything past a minute.
 4. **The `files` object shape differs per endpoint.** `/v2/films/actor/{id}`
    with a minimal `include` returns only `domain`/`folder`/`file`/`ext` with
    no `link`/`linkAbsolute`/`thumbnails`; with the full include list
@@ -2207,8 +2379,13 @@ New:
 - **Do not re-investigate the 404 on `Kalmar o'yini 3-qism / segment244.ts`.**
   Reproduced on a completely fresh download; it is a source-side defect and is
   already mitigated by the tail-skip rule.
-- **Do not try to "fix" the progress bar by looking for `playback_time`.** The
-  field is absent from the payload; `duration` is the correct denominator.
+- **Do not repeat the claim that `playback_time` is absent from the
+  latest-viewed payload.** Disproved on 2026-08-19 against the live API: it is
+  present in every request variant (minutes), while the item's exact `duration`
+  (seconds) only arrives when `fields` names it. Use `latestViewedProgress`,
+  which prefers `duration` and falls back to `playback_time * 60`. What is
+  actually forbidden is the old `?? 1` fallback — it makes the denominator 60
+  seconds and renders a full bar for any position past a minute.
 - **Do not use `second['film_id']` as a film id.** It is the episode id.
 - **Do not add `SystemUiMode.edgeToEdge` calls to `FilmScreen`.** This was
   tried and then removed — the theme change alone is sufficient, and toggling
@@ -2216,13 +2393,13 @@ New:
 - **Do not chase `AppBar.flexibleSpace` rendering.** It was already broken
   before this session; the scrim now lives in the poster `Stack` and works. A
   solid-red test proved the replacement renders.
-- **Segment concurrency history.** 10 gave 5.55 MB/s, 24 gave 7.23 MB/s, and
-  the first attempt at 48 was unstable and coincided with an app restart — but
-  that run predates the Bug 17 `safeDispose` ExoPlayer leak fix, so the restart
-  was not necessarily the concurrency's fault. **As of 2026-08-16 the value is
-  48 by the project owner's decision** and has **NOT** been re-measured. If a
-  download ever restarts the app again, suspect this constant first;
-  `_maxInFlightBytes` (64 MB) is what still bounds heap use.
+- **Segment concurrency history — settled.** 10 gave 5.55 MB/s, 24 gave
+  9.11 MB/s effective, and **48 was finally measured on 2026-08-19: 10.94 MB/s
+  effective (11.44 MB/s network-only), 448 MB in 41 s, with no app restart and a
+  byte-identical output file.** The 2026-08-13 restart that made 48 suspect did
+  not reproduce; that run predates the Bug 17 `safeDispose` fix. Do not re-run
+  this — it costs ~450 MB. `_maxInFlightBytes` (64 MB) is what bounds heap use.
+  Note the measurement was on 4G+, where the network leg is 96 % of wall time.
 - **Do not re-open the 5-qism duration question.** A clean re-download is
   exactly 47:01 (2821.46 s) and decodes without errors.
 - **Do not re-test the `latestviewed_screen` tap path.** Verified end to end on
@@ -2409,6 +2586,21 @@ New:
   to **PNG** while keeping the original extension, so every JPEG poster would be
   stored twice and the resized copy would be an order of magnitude larger. The
   parameters were inert in release, so removing them costs nothing.
+- **Do not go looking for a film with no `lastSeries`.** 170 were probed on
+  2026-08-19 (the 20 most recently updated and the 150 oldest by `publish_time`)
+  and every one had a populated `lastSeries.track`. The `getFirstEpisode`
+  fallback was verified by ablating the field in a debug build instead, and the
+  ablation was reverted. Use that method if the branch ever needs re-testing.
+- **Do not add a separate SHA-256 asset to the release.** The GitHub releases
+  API already returns `"digest": "sha256:<hex>"` on each asset; `_pickApk` reads
+  it. Verified 2026-08-19 that the digest matches the locally built APK exactly.
+  The atom fallback has no asset list, so it stays unverified there — by design.
+- **Do not put a raw `$e` in a user-visible string.** Every screen goes through
+  `ApiErrorHandler`; `lib/utils/pagination_controller.dart` and
+  `index_screen._fetchData` are the two funnels that cover most of them.
+  `appLogger` calls keep the raw exception on purpose. Two sites are deliberate
+  exceptions — an `AndroidIntent` failure is not an API error and carries a
+  fixed sentence instead.
 - **Do not re-investigate the debug-only poster rendering.** Cause found and
   fixed on 2026-08-19 (part 3), verified on device across Katalog, Sevimlilar
   and Janrlar. It was never about the API payload, `CachedNetworkImage` caching,
@@ -2460,6 +2652,13 @@ debug-only `assert` in `cached_network_image`, tripped by
 affected surfaces were verified on the device. Release behaviour is unchanged,
 because the parameters were already being ignored there.
 
+**The Medium/Low list is empty except for the release-build repeats**
+(2026-08-19, part 4). Segment concurrency at 48 is measured and stays,
+`getFirstEpisode` is verified by ablation, `ApiErrorHandler` covers the screens,
+the OTA download carries a SHA-256, TV-channel playback leaves the heap bounded,
+and the `tplaytv` backport has landed. One long-standing claim in this document
+was overturned along the way — see the corrected Important Discovery #3.
+
 **The working tree is clean and everything is released.** All three 2026-08-19
 changes — the new-content notifications, the bottom-inset sweep and the debug
 poster fix — were committed as four commits plus a docs commit and pushed to
@@ -2476,11 +2675,16 @@ The open list is the Medium/Low set at the end of this document:
 - ~~**Debug-only poster rendering.**~~ **DONE (2026-08-19)** — see part 3 of
   that session. A debug-only `assert` inside `cached_network_image`, not a
   caching or payload problem.
-- Re-measure segment concurrency at 48, the unexercised `getFirstEpisode`
-  fallback, `ApiErrorHandler` coverage in the screens that still interpolate raw
-  `$e`, TV-channel playback after the disposal change, an optional SHA-256 for
-  the OTA download, the install-flow repeat on a release build, and the
-  `tplaytv` backport (periodic sync + `duration` denominator).
+- ~~Re-measure segment concurrency at 48, the unexercised `getFirstEpisode`
+  fallback, `ApiErrorHandler` coverage, TV-channel playback after the disposal
+  change, a SHA-256 for the OTA download, and the `tplaytv` backport.~~ **All six
+  DONE (2026-08-19)** — see part 4 of that session.
+- **What is left is release-build verification and one device this machine does
+  not have.** The notification feature and the install flow have only been
+  exercised on `uz.mrlg.riyaplay.debug`; the OTA checksum needs a release newer
+  than the installed one; the alarm has never survived a real reboot; Doze
+  timing is unmeasured; and the `tplaytv` backport compiles cleanly but has not
+  run on an Android TV box.
 - Optional, and deliberately not done: the grid-density setting was applied to
   the home rows, Katalog, Sevimlilar and the skeleton only. The other grids
   (`genres_films_screen`, `categories_screen`, `actor_films_screen`,
