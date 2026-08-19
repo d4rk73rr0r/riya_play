@@ -264,6 +264,7 @@ class UpdateService {
         notes: _plainText(data['body'] as String? ?? ''),
         apkUrl: apk.url,
         apkBytes: apk.size,
+        sha256: apk.sha256,
       ),
     );
   }
@@ -446,11 +447,17 @@ class UpdateService {
       final name = (asset['name'] as String? ?? '');
       final url = asset['browser_download_url'] as String? ?? '';
       if (!name.toLowerCase().endsWith('.apk') || url.isEmpty) continue;
+      // GitHub `digest` ni `sha256:<hex>` shaklida beradi; `ota_update` esa
+      // faqat hex kutadi. Maydon eski relizlarda yo'q bo'lishi mumkin.
+      final digest = asset['digest'] as String? ?? '';
+      final sha256 =
+          digest.startsWith('sha256:') ? digest.substring(7).trim() : null;
       apks.add(
         _ApkAsset(
           name: name,
           url: url,
           size: (asset['size'] as num?)?.toInt() ?? 0,
+          sha256: (sha256 != null && sha256.isNotEmpty) ? sha256 : null,
         ),
       );
     }
@@ -527,12 +534,20 @@ class UpdateInfo {
   final String apkUrl;
   final int apkBytes;
 
+  /// Yuklab olingandan keyin `ota_update` tekshiradigan SHA-256.
+  ///
+  /// Faqat GitHub API yo'lida mavjud: reliz asset'i `digest` maydonini olib
+  /// keladi. Atom zaxira yo'lida `null`, ya'ni tekshiruvsiz o'rnatiladi —
+  /// bu avvalgi xatti-harakat, shuning uchun regressiya emas.
+  final String? sha256;
+
   const UpdateInfo({
     required this.version,
     required this.tagName,
     required this.notes,
     required this.apkUrl,
     required this.apkBytes,
+    this.sha256,
   });
 
   String get readableSize {
@@ -566,7 +581,17 @@ class _ApkAsset {
   final String url;
   final int size;
 
-  const _ApkAsset({required this.name, required this.url, required this.size});
+  /// GitHub asset'ining SHA-256 yig'indisi, `sha256:` prefiksisiz.
+  ///
+  /// Atom zaxira yo'lida `null` bo'ladi — u yerda asset ro'yxati umuman yo'q.
+  final String? sha256;
+
+  const _ApkAsset({
+    required this.name,
+    required this.url,
+    required this.size,
+    this.sha256,
+  });
 }
 
 /// Nuqta bilan ajratilgan versiya raqami, ixtiyoriy build raqami bilan
@@ -752,6 +777,9 @@ class _UpdateDialogState extends State<_UpdateDialog>
           .execute(
             widget.info.apkUrl,
             destinationFilename: UpdateService._apkFileName,
+            // Yig'indi bo'lmasa uzatilmaydi: `ota_update` ni bo'sh satr bilan
+            // chaqirish har doim CHECKSUM_ERROR beradi.
+            sha256checksum: widget.info.sha256,
           )
           .listen(_onEvent, onError: _onStreamError);
     } catch (e) {
