@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    ic_notification is named only from Dart, as the string passed to
+    AndroidInitializationSettings. Nothing in the Java/Kotlin sources or in any
+    resource file references it, so the release build's resource shrinker
+    (isShrinkResources = true) removes it and flutter_local_notifications'
+    initialize() throws PlatformException(invalid_icon) — before runApp, which
+    left the app sitting on the splash screen forever.
+
+    Debug builds do not shrink, which is why this was invisible until v1.0.8
+    was installed from a release APK.
+-->
+<resources
+    xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@drawable/ic_notification" />

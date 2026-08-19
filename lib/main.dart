@@ -62,8 +62,20 @@ void main() async {
   // bosilishi tufayli ochilgan bo'lsa, payload birinchi kadrdan oldin
   // o'qilishi kerak — aks holda `MainScreen` "meni ochishdi" degan xabarni
   // olmay qoladi.
-  await NotificationService.init(onTap: NotificationRouter.handleResponse);
-  final launchFilmId = await NotificationService.pendingLaunchFilmId();
+  //
+  // Bu blok hech qachon `runApp` ga yetib borishni to'xtatmasligi kerak.
+  // v1.0.8 relizida aynan shu bo'lgan edi: resurs qisqartiruvchi
+  // `ic_notification` ni olib tashlagach, `initialize()`
+  // `PlatformException(invalid_icon)` otdi, istisno ushlanmadi va ilova
+  // splash ekranida abadiy qoldi. Bildirishnomasiz ilova ham to'liq
+  // ishlaydi — katalog, pleer, yuklab olishlar hammasi joyida.
+  int? launchFilmId;
+  try {
+    await NotificationService.init(onTap: NotificationRouter.handleResponse);
+    launchFilmId = await NotificationService.pendingLaunchFilmId();
+  } catch (e) {
+    appLogger.d('Bildirishnomalarni sozlab bo‘lmadi: $e');
+  }
   if (launchFilmId != null) NotificationRouter.open(launchFilmId);
   runApp(
     MultiProvider(
