@@ -775,7 +775,8 @@ release build renders them.
 | `v1.0.5` | `1.0.5+6` | 1006 / 2006 / 4006 | 2026-08-17 13:25 | navigation-bar insets, episode-card overflow |
 | `v1.0.6` | `1.0.6+7` | 1007 / 2007 / 4007 | 2026-08-18 06:05 | one-card continue-watching update, release-notes scrollbar |
 | `v1.0.7` | `1.0.7+8` | 1008 / 2008 / 4008 | 2026-08-18 08:34 | card captions, 2x2 / 3x3 grid density |
-| `v1.0.8` | `1.0.8+9` | 1009 / 2009 / 4009 | 2026-08-19 10:06 | new-content notifications, the bottom-inset sweep, the debug poster fix |
+| `v1.0.8` | `1.0.8+9` | 1009 / 2009 / 4009 | 2026-08-19 10:06 | new-content notifications, the bottom-inset sweep, the debug poster fix — **shipped broken**, assets replaced 15:03 the same day |
+| `v1.0.9` | `1.0.9+10` | 1010 / 2010 / 4010 | 2026-08-20 07:58 | the splash-freeze fix reaches everyone, grid density everywhere, the two scanner defects, 401 handling, OTA SHA-256 |
 
 `v1.0.6` did not publish on the first two tries: `gh` returned
 `HTTP 503: No server is currently available` from
@@ -2851,6 +2852,14 @@ the owner's login.
 the OTA download carries a SHA-256, TV-channel playback leaves the heap bounded,
 and the `tplaytv` backport has landed. One long-standing claim in this document
 was overturned along the way — see the corrected Important Discovery #3.
+
+**`v1.0.9` is the Latest release** (`1010 / 2010 / 4010`, published
+2026-08-20 07:58 UTC, all three split APKs `uploaded`, the arm64 digest
+matching the local `sha256sum`). Because the version did move this time, the
+OTA check will offer it to the devices stuck on the broken v1.0.8. Its release
+build was launched on the device and reached the **catalogue home screen** —
+banners, continue-watching and three-column rows — with zero `E/flutter`
+output, which is the confirmation the v1.0.8 republish could not get.
 
 **The working tree is clean and everything is released.** All three 2026-08-19
 changes — the new-content notifications, the bottom-inset sweep and the debug
