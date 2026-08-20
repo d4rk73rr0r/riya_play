@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:provider/provider.dart';
+import 'package:riya_play/utils/grid_density.dart';
 import 'package:riya_play/services/error_handler.dart';
 import 'package:riya_play/services/api_service.dart';
 import 'package:riya_play/screens/film_screen.dart';
@@ -41,7 +42,9 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
             onError: (e) {
               if (mounted) {
                 ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text(ApiErrorHandler.handle(e).userMessage)),
+                  SnackBar(
+                    content: Text(ApiErrorHandler.handle(e).userMessage),
+                  ),
                 );
               }
             },
@@ -135,7 +138,10 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
         }
       }
       precacheImage(
-        CachedNetworkImageProvider(coverUrl, cacheManager: filmImagesCacheManager),
+        CachedNetworkImageProvider(
+          coverUrl,
+          cacheManager: filmImagesCacheManager,
+        ),
         context,
       );
     }
@@ -298,8 +304,10 @@ class _CategoriesScreenState extends State<CategoriesScreen> {
               SliverPadding(
                 padding: const EdgeInsets.symmetric(horizontal: AppSpacing.lg),
                 sliver: SliverGrid(
-                  gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: 2,
+                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                    // Ustunlar soni Profil bo'limidagi 2x2 / 3x3 sozlamasidan keladi.
+                    crossAxisCount:
+                        Provider.of<GridDensityProvider>(context).columns,
                     crossAxisSpacing: AppSpacing.md,
                     mainAxisSpacing: AppSpacing.md,
                     childAspectRatio: 0.65,

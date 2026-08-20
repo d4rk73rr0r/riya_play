@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:riya_play/services/error_handler.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:riya_play/utils/grid_density.dart';
 import 'package:riya_play/services/api_service.dart';
 import 'package:riya_play/screens/film_screen.dart';
 import 'package:riya_play/theme_provider.dart';
@@ -160,13 +161,16 @@ class _GenresFilmsScreenState extends State<GenresFilmsScreen> {
                       SliverPadding(
                         padding: const EdgeInsets.only(bottom: AppSpacing.md),
                         sliver: SliverGrid(
-                          gridDelegate:
-                              const SliverGridDelegateWithFixedCrossAxisCount(
-                                crossAxisCount: 2,
-                                crossAxisSpacing: AppSpacing.md,
-                                mainAxisSpacing: AppSpacing.md,
-                                childAspectRatio: 0.65,
-                              ),
+                          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                            // Ustunlar soni Profil bo'limidagi 2x2 / 3x3 sozlamasidan keladi.
+                            crossAxisCount:
+                                Provider.of<GridDensityProvider>(
+                                  context,
+                                ).columns,
+                            crossAxisSpacing: AppSpacing.md,
+                            mainAxisSpacing: AppSpacing.md,
+                            childAspectRatio: 0.65,
+                          ),
                           delegate: SliverChildBuilderDelegate(
                             (context, index) =>
                                 FilmCard(film: _pagination.items[index]),

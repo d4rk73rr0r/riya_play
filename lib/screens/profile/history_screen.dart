@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:riya_play/utils/grid_density.dart';
 import 'package:riya_play/services/api_service.dart';
 import 'package:riya_play/screens/film_screen.dart';
 import 'package:cached_network_image/cached_network_image.dart';
@@ -196,8 +197,9 @@ class ContentWidget extends StatelessWidget {
         SliverPadding(
           padding: const EdgeInsets.symmetric(horizontal: 16.0),
           sliver: SliverGrid(
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2,
+            gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+              // Ustunlar soni Profil bo'limidagi 2x2 / 3x3 sozlamasidan keladi.
+              crossAxisCount: Provider.of<GridDensityProvider>(context).columns,
               crossAxisSpacing: 12,
               mainAxisSpacing: 12,
               childAspectRatio: 0.65,

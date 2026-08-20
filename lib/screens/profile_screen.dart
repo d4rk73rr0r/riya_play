@@ -661,7 +661,7 @@ class GridDensityDialog extends StatelessWidget {
           ),
           const SizedBox(height: 4),
           Text(
-            "Bosh sahifa, Katalog va Sevimlilar uchun",
+            "Muqovali barcha ro'yxatlar uchun",
             style: TextStyle(fontSize: 13, color: themeProvider.subTextColor),
           ),
           const SizedBox(height: 16),
