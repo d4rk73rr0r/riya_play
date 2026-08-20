@@ -264,6 +264,68 @@ queue-rendering question.
 
 `flutter analyze lib`: 5 pre-existing infos, the unchanged baseline.
 
+### Session of 2026-08-20 — grid density everywhere, and two scanner defects
+
+Three reported defects, all reproduced and fixed.
+
+#### 1. The 2x2 / 3x3 setting reached only three surfaces
+
+Deliberate when the setting shipped — the request had named the home rows,
+Katalog and Sevimlilar — but every other poster grid hard-coded
+`crossAxisCount: 2`, so Tavsiya etilganlar, a genre's inner page (Jangari and
+the rest), Premyeralar, Doramalar and the other category pages ignored the
+choice entirely.
+
+Five files now read `GridDensityProvider.columns`, exactly as Katalog does:
+
+| File | Surface |
+| --- | --- |
+| `lib/screens/recommended_films_screen.dart` | Tavsiya etilganlar |
+| `lib/screens/genres_films_screen.dart` | a genre's films (Jangari, Dramma, …) |
+| `lib/screens/categories_screen.dart` | Premyeralar, Doramalar, Xorij kino tarjimalar, every category |
+| `lib/screens/actor_films_screen.dart` | an actor's films |
+| `lib/screens/profile/history_screen.dart` | Ko'rishlar tarixi |
+
+The picker's own subtitle said "Bosh sahifa, Katalog va Sevimlilar uchun",
+which is now false; it reads "Muqovali barcha ro'yxatlar uchun".
+
+#### 2. The camera error stayed on screen after the permission was granted
+
+`MobileScanner` was built on the very first frame, racing the permission
+request: the camera failed with a permission error, `errorBuilder` drew
+"Kamera xatosi: …", and nothing ever restarted the scanner once the user
+granted the permission. Re-entering the screen looked fine only because the
+permission was already granted by then.
+
+The scanner is now gated on `_permissionChecked`, which
+`_requestCameraPermission` sets after a granted answer, and a spinner fills the
+gap. The same flag gates the scan frame and the torch button, so they cannot
+float over an empty screen.
+
+#### 3. The torch icon never changed
+
+`controller.torchEnabled` in `mobile_scanner` 6.0.10 is a **`final`
+constructor field** — the initial value, not live state. `toggleTorch()` does
+not touch it, so the icon read `flash_off` with the torch lit. The live value
+is `controller.value.torchState`; the button is now a
+`ValueListenableBuilder<MobileScannerState>` over the controller (which is a
+`ValueNotifier`), and the manual `setState` after `toggleTorch()` is gone. The
+icon is grey when off and yellow when on.
+
+#### Verified on device (debug build, SM-A556E)
+
+| Test | Result |
+| --- | --- |
+| Profil → 3x3, then a category page (Xorij kino tarjimalar) | **PASS.** Three columns |
+| Genre inner page (Jangari) | **PASS.** Three columns |
+| Tavsiya etilganlar | **PASS.** Three columns |
+| Camera permission revoked (`pm revoke … CAMERA`), first entry | **PASS.** Spinner, then the system dialog; **no** error text |
+| Granting the permission | **PASS.** The preview starts at once, without leaving the screen |
+| Torch on | **PASS.** Yellow `flash_on`, scene visibly lit |
+| Torch off | **PASS.** Grey `flash_off` |
+
+`flutter analyze lib`: 5 pre-existing infos, the unchanged baseline.
+
 ### Session of 2026-08-19, part 5 — v1.0.8 froze on the splash screen
 
 Reported after the release went out: the published v1.0.8 never got past the
@@ -2613,9 +2675,22 @@ New:
   --clobber` + `gh release edit --draft=false --latest`.
 - **Do not hard-code `crossAxisCount: 2` (or `/ 2` for a row's item width)
   again.** The column count is a user setting — `GridDensityProvider.columns`
-  in `lib/utils/grid_density.dart`, chosen in Profil as 2x2 / 3x3. The home
-  rows, the Katalog and Sevimlilar grids and `PosterGridSkeleton` all read it;
-  a hard-coded value there makes the skeleton and the grid disagree.
+  in `lib/utils/grid_density.dart`, chosen in Profil as 2x2 / 3x3. **Every**
+  poster grid reads it as of 2026-08-20: the home rows, Katalog, Sevimlilar,
+  `PosterGridSkeleton`, Tavsiya etilganlar, the genre inner pages, the category
+  pages (Premyeralar, Doramalar, …), an actor's films and Ko'rishlar tarixi. A
+  hard-coded value makes the skeleton and the grid disagree, and it silently
+  opts that screen out of the setting.
+- **Do not build `MobileScanner` before the camera permission is granted.** It
+  races the request, fails with a permission error, and `errorBuilder` paints
+  a message that nothing clears afterwards — the screen looked broken until it
+  was re-entered. `_permissionChecked` gates the scanner, the scan frame and
+  the torch button.
+- **Do not read `controller.torchEnabled` for the torch state.** In
+  `mobile_scanner` 6.0.10 it is the `final` constructor argument, so it never
+  changes and the icon stays `flash_off` forever. The live value is
+  `controller.value.torchState`; the controller is a `ValueNotifier`, so a
+  `ValueListenableBuilder` is enough and no `setState` is needed.
 - **Do not restore `_pagination.refresh()` in `LatestViewedScreen.didPopNext`
   for the playback path.** Refetching 20 entries to reflect one changed entry is
   exactly what was removed: the card now updates its own position and the screen
@@ -2754,6 +2829,12 @@ debug-only `assert` in `cached_network_image`, tripped by
 affected surfaces were verified on the device. Release behaviour is unchanged,
 because the parameters were already being ignored there.
 
+**Three reported UI defects were fixed on 2026-08-20** and shipped as
+`v1.0.9`: the 2x2 / 3x3 setting now reaches every poster grid, the TV-activation
+screen no longer leaves a camera error on screen after the permission is
+granted, and its torch icon tracks the real torch state. All three verified on
+the device.
+
 **v1.0.8 shipped broken and was republished on 2026-08-19** — the resource
 shrinker deleted `ic_notification`, the notification init threw before
 `runApp`, and the app sat on the splash forever. Fixed with `res/raw/keep.xml`
@@ -2797,11 +2878,9 @@ The open list is the Medium/Low set at the end of this document:
   than the installed one; the alarm has never survived a real reboot; Doze
   timing is unmeasured; and the `tplaytv` backport compiles cleanly but has not
   run on an Android TV box.
-- Optional, and deliberately not done: the grid-density setting was applied to
-  the home rows, Katalog, Sevimlilar and the skeleton only. The other grids
-  (`genres_films_screen`, `categories_screen`, `actor_films_screen`,
-  `recommended_films_screen`, `profile/history_screen`) still hard-code two
-  columns, because the request named only those three surfaces.
+- ~~Optional: the grid-density setting reached only the home rows, Katalog,
+  Sevimlilar and the skeleton.~~ **DONE (2026-08-20)** — the remaining five
+  grids read `GridDensityProvider.columns` too.
 
 The idle ~120 fps question is **not** on this list any more — part 6 found and
 fixed it (the banner ring's `AnimationController` ticking for off-screen tabs).
