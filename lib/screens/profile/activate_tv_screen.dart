@@ -26,6 +26,15 @@ class ActivateRiyaPlayTVScreenState extends State<ActivateRiyaPlayTVScreen> {
   bool _isCameraActive = true;
   bool _hasCameraError = false;
 
+  /// Kamera ruxsati berilgani aniqlanmaguncha `MobileScanner` qurilmaydi.
+  ///
+  /// Ilgari skaner birinchi kadrdayoq qurilardi, ya'ni ruxsat so'rovi bilan
+  /// poyga bo'lardi: kamera "Permission denied" bilan yiqilib, `errorBuilder`
+  /// xato matnini chizardi. Foydalanuvchi ruxsat bergandan keyin ham hech
+  /// narsa skanerni qayta ishga tushirmasdi, shuning uchun o'sha matn
+  /// ekranda qolib ketardi va faqat sahifaga qayta kirgach yo'qolardi.
+  bool _permissionChecked = false;
+
   @override
   void initState() {
     super.initState();
@@ -38,12 +47,16 @@ class ActivateRiyaPlayTVScreenState extends State<ActivateRiyaPlayTVScreen> {
     if (!status.isGranted) {
       status = await Permission.camera.request();
     }
-    if (!status.isGranted && mounted) {
+    if (!mounted) return;
+    if (!status.isGranted) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text("Kamera ruxsati kerak")));
       Navigator.pop(context);
+      return;
     }
+    // Ruxsat bor — endigina skaner qurilishi mumkin.
+    setState(() => _permissionChecked = true);
   }
 
   Future<void> _checkAndShowInstructions() async {
@@ -533,6 +546,10 @@ class ActivateRiyaPlayTVScreenState extends State<ActivateRiyaPlayTVScreen> {
   @override
   Widget build(BuildContext context) {
     final themeProvider = Provider.of<ThemeProvider>(context);
+    // Skaner ham, uning ustidagi ramka va chiroq tugmasi ham bir xil shartga
+    // bog'liq — aks holda ular ruxsat kutilayotgan bo'sh ekran ustida turadi.
+    final showCamera =
+        _permissionChecked && _isCameraActive && !_hasCameraError;
 
     return Scaffold(
       backgroundColor:
@@ -559,7 +576,10 @@ class ActivateRiyaPlayTVScreenState extends State<ActivateRiyaPlayTVScreen> {
       ),
       body: Stack(
         children: [
-          if (_isCameraActive && !_hasCameraError)
+          // Tizim ruxsat oynasi javob berguncha — bo'sh ekran emas, kutish.
+          if (!_permissionChecked && !_hasCameraError)
+            const Center(child: CircularProgressIndicator()),
+          if (showCamera)
             MobileScanner(
               controller: controller,
               onDetect: _onDetect,
@@ -681,7 +701,7 @@ class ActivateRiyaPlayTVScreenState extends State<ActivateRiyaPlayTVScreen> {
               ),
             ),
           ),
-          if (_isCameraActive && !_hasCameraError)
+          if (showCamera)
             Positioned.fill(
               child: Center(
                 child: Container(
@@ -731,7 +751,7 @@ class ActivateRiyaPlayTVScreenState extends State<ActivateRiyaPlayTVScreen> {
                 ),
               ),
             ),
-          if (_isCameraActive && !_hasCameraError)
+          if (showCamera)
             Positioned(
               bottom: 100,
               left: 0,
@@ -755,32 +775,45 @@ class ActivateRiyaPlayTVScreenState extends State<ActivateRiyaPlayTVScreen> {
                       ),
                     ],
                   ),
-                  child: IconButton(
-                    icon: Icon(
-                      controller.torchEnabled
-                          ? Icons.flash_on
-                          : Icons.flash_off,
-                      color:
-                          themeProvider.isDarkMode
-                              ? Colors.yellow[300]
-                              : Colors.yellow[700],
-                      size: 32,
-                    ),
-                    onPressed: () async {
-                      try {
-                        await controller.toggleTorch();
-                        if (mounted) {
-                          setState(() {});
-                        }
-                      } catch (e) {
-                        if (mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text("Chiroqni yoqishda xatolik: $e"),
-                            ),
-                          );
-                        }
-                      }
+                  // `controller.torchEnabled` — konstruktorga berilgan
+                  // boshlang'ich qiymat, `final`. `toggleTorch()` uni
+                  // o'zgartirmaydi, shuning uchun ikonka chiroq yoqilganda
+                  // ham `flash_off` bo'lib qolardi. Jonli holat
+                  // `controller.value.torchState` da; kontroller o'zi
+                  // `ValueNotifier` bo'lgani uchun `setState` ham kerak emas.
+                  child: ValueListenableBuilder<MobileScannerState>(
+                    valueListenable: controller,
+                    builder: (context, state, _) {
+                      final isOn = state.torchState == TorchState.on;
+                      return IconButton(
+                        icon: Icon(
+                          isOn ? Icons.flash_on : Icons.flash_off,
+                          color:
+                              isOn
+                                  ? (themeProvider.isDarkMode
+                                      ? Colors.yellow[300]
+                                      : Colors.yellow[700])
+                                  : (themeProvider.isDarkMode
+                                      ? Colors.grey[400]
+                                      : Colors.grey[600]),
+                          size: 32,
+                        ),
+                        onPressed: () async {
+                          try {
+                            await controller.toggleTorch();
+                          } catch (e) {
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text(
+                                    "Chiroqni yoqishda xatolik: $e",
+                                  ),
+                                ),
+                              );
+                            }
+                          }
+                        },
+                      );
                     },
                   ),
                 ),
