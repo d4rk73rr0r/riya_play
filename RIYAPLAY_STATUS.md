@@ -135,6 +135,25 @@ cleartext exception added for OqTV is not involved.
 | logcat during the run | **0** `E/flutter`, 0 `ExoPlaybackException` |
 | `flutter analyze lib` | 5 pre-existing infos, the unchanged baseline |
 
+#### Verified on a **release** build, then published
+
+The two defects of v1.0.8 both hid in release-only transforms, so the release
+APK was installed over the device's `1.0.9 / 2010` before publishing anything:
+
+| Check | Result |
+| --- | --- |
+| Launch | **PASS** — no splash freeze, catalogue home reached with the owner's session intact |
+| OnTV playback | **PASS** — `Setanta Sports 1` live |
+| OqTV playback | **PASS** — `Al Jazeera HD` live, i.e. `network_security_config.xml` survived the resource shrinker |
+| logcat | 0 `CleartextNotPermitted`, 0 `ExoPlaybackException` |
+
+`v1.0.10` was then published to `d4rk73rr0r/rplay-releases` (2026-08-22
+10:06 UTC) as **Latest**, all three split APKs `uploaded`
+(`1011 / 2011 / 4011`, `versionName 1.0.10` confirmed with `aapt dump badging`),
+and the arm64 asset's `digest` equals the local `sha256sum`
+(`4136267330c1…`). Source commits `b7b7ac4..96c6783` are pushed to
+`d4rk73rr0r/riya_play`.
+
 ### Session of 2026-08-22, part 2 — OqTV replaces SalomTV and BizTV
 
 The owner asked for the two legacy TV sources to go and for **OqTV** to take
