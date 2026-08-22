@@ -99,8 +99,33 @@ Three tiers, in `lib/services/`:
 `try/catch`. Responses are decoded with `utf8.decode(response.bodyBytes)` — required for
 Uzbek/Russian titles.
 
-TV channels bypass this stack entirely: `tv_api_service.dart` fans out to three unrelated
-third-party providers (`SalomTV`, `SpecUZ`, `BizTV`), each with its own base URL.
+TV channels bypass this stack entirely: `tv_api_service.dart` talks to three unrelated
+third-party providers, `OqTV` (the default), `OnTV` and `SpecUZ`, each with its own base
+URL. `SalomTV` and `BizTV` were removed on 2026-08-22.
+
+`OnTV` (`api.ontv.uz`) is the simplest of the three: one call to
+`/api/v2/channels?include=file,categories&per_page=100` returns all 84 channels with their
+logos, their two categories (free/paid) **and** their stream URLs, so there is no per-channel
+stream call. It needs a hard-coded account bearer — without it the same list comes back with
+every `url_*` null but one. Those URLs are signed and expire in about six hours, so the list
+is cached in memory for 30 minutes and never written to disk.
+
+`OqTV` needs four calls before a stream URL exists, and two different hosts:
+`api.oq.uz` issues an anonymous bearer (`/token/base/`) which is exchanged for a catalogue
+token (`/api/v1/kinom/auth/token/`), then `uzbeeline.platform24.tv` registers a device
+(`/v2/users/self/devices`) and authenticates it (`/v2/auth/device`, **form-encoded**) for
+the *stream* token — the catalogue token alone gets 401 from
+`/v2/channels/{id}/stream`. The serial, device id and stream token live in
+`SharedPreferences` (`oqtv_*`) because registering again always creates another device row
+on the provider's account. Every OqTV request must send `User-Agent: Dart/3.9 (dart:io)`.
+One call to `/v2/users/self/channels/categories` returns every category *with* its
+channels, so the whole tab is one request.
+
+OqTV's playlists are plain `http://<ip>:80/…` and those hosts have no TLS, so
+`android/app/src/main/res/xml/network_security_config.xml` permits cleartext for the
+whole app (the stream IP changes per session, so there is nothing stable to whitelist).
+Dart's `HttpClient` ignores that policy — only ExoPlayer enforces it, so a new media
+source has to be tried in the player, not just with `http.get`.
 
 ### Downloads — the most intricate part
 

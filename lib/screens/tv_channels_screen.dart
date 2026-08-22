@@ -34,7 +34,7 @@ class _TVChannelsScreenState extends State<TVChannelsScreen>
   TabController? _tabController;
   List<dynamic> categories = [];
   Map<String, List<dynamic>> channelsByCategory = {};
-  String selectedSource = "SalomTV";
+  String selectedSource = TVApiService.baseUrls.keys.first;
   bool _isLoading = true;
   int totalChannels = 0;
 
@@ -126,12 +126,14 @@ class _TVChannelsScreenState extends State<TVChannelsScreen>
         'channels_${selectedSource}_page_1${categoryId ?? "all"}';
     Map<String, dynamic> channelData;
 
-    if (selectedSource == "SalomTV" || selectedSource == "BizTV") {
+    if (selectedSource == "OqTV" || selectedSource == "OnTV") {
+      // Ikkalasi ham kanallarni kategoriyalari bilan bitta so'rovda beradi va
+      // `TVApiService` javobni jarayon davomida keshda tutadi — bu yerda
+      // diskka yozish faqat o'sha nusxani takrorlash bo'lardi. OnTV uchun
+      // diskka yozish zararli ham: uning strim manzillari muddatli.
       channelData = await TVApiService.getTVChannels(
         source: selectedSource,
-        page: 1,
         categoryId: categoryId,
-        fetchAll: selectedSource == "BizTV",
       );
     } else {
       final cachedChannels = await dataCacheManager.getFileFromCache(
@@ -177,17 +179,10 @@ class _TVChannelsScreenState extends State<TVChannelsScreen>
   ) async {
     String? videoUrl;
     try {
-      if (source == "SalomTV" || source == "BizTV") {
-        videoUrl = channelId; // For BizTV, channelId is the URL
-      } else if (source == "SpecUZ") {
-        final channelDetails = await TVApiService.getChannelDetails(
-          source: source,
-          channelId: channelId,
-        );
-        videoUrl =
-            channelDetails['channel_stream_all'] ??
-            channelDetails['test_stream'];
-      }
+      videoUrl = await TVApiService.getStreamUrl(
+        source: source,
+        channelId: channelId,
+      );
       // `ErrorInfo` otiladi, `Exception` emas: `ApiErrorHandler.handle` uni
       // o'zgartirmasdan qaytaradi, shuning uchun bu aniq xabar saqlanadi,
       // tarmoq xatosi esa o'zining klassifikatsiyasini oladi.
@@ -546,9 +541,7 @@ class _TVChannelsScreenState extends State<TVChannelsScreen>
               borderRadius: BorderRadius.circular(12),
               onTap:
                   () => _playChannel(
-                    selectedSource == "SalomTV" || selectedSource == "BizTV"
-                        ? channel['url']
-                        : channel['id'],
+                    channel['id'],
                     channel['title_uz'],
                     selectedSource,
                   ),
