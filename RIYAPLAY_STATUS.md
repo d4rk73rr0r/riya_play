@@ -69,6 +69,336 @@ The session covered four areas, in order:
    wrong progress denominator, wrong sort order; plus the cards now start
    playback directly instead of opening the film page.
 
+### Session of 2026-08-22, part 3 — OnTV added as the third source
+
+The owner supplied a Python playlist generator (`m3u8.py`) that pulls
+`https://api.ontv.uz/api/v2/channels` with a hard-coded account bearer and
+writes an `.m3u` out of `url_1080 / url_720 / url_480`. That endpoint became
+the third TV source.
+
+#### What the API gives, and what it costs
+
+One request returns everything the tab needs:
+
+```
+GET https://api.ontv.uz/api/v2/channels
+      ?append=promotion&include=file,categories&per_page=100&_f=json&_l=uz
+```
+
+- **84 channels, `last_page: 1`** — no paging loop, unlike the BizTV code this
+  replaces.
+- Each row carries `url_1080` / `url_720` / `url_480` directly, so **there is no
+  per-channel stream call at all** — the cheapest of the three sources.
+- `file.url` is a ready CDN link (`https://cdn.ontv.uz/…webp`); every channel
+  has one (0 without).
+- `include=categories` returns the channel categories inline. There are only
+  **two** with `type: 3` — `Bepul kanallar` (6) and `Pullik kanallar` (78).
+  `/api/v2/categories` also exists but is the *film* catalogue's: 36 rows, only
+  those two of them about channels. It is not called.
+
+Two facts that shape the caching:
+
+- **The bearer is what makes the list useful.** Without `Authorization` the
+  endpoint still answers 200 with all 84 rows, but only **one** of them has a
+  stream URL; the rest come back null. Measured 2026-08-22 (201,716 bytes with
+  the token against 154,605 without).
+- **The stream URLs expire.** They are signed
+  (`token=<hash>-<hash>-1787412727-1787391127`, the pair being issue and
+  expiry) — about **six hours**. So the list is held in memory for 30 minutes
+  (`_onTvChannelsTtl`) and **never written to disk**; `_fetchChannels` skips the
+  screen's `dataCacheManager` for OnTV exactly as it does for OqTV.
+
+The bearer is a JWT with `exp: 1806132793` — **late March 2027**. When the list
+comes back stream-less after that date, the token is the first thing to check.
+
+The streams live on `https://fl.biztv.media/…` — the same CDN the removed BizTV
+source used, but reachable through a different API and over HTTPS, so the
+cleartext exception added for OqTV is not involved.
+
+#### Changes
+
+| File | Change |
+| --- | --- |
+| `lib/services/tv_api_service.dart` | `OnTV` added to `baseUrls`, `onTvHeaders` with the account bearer, `_onTvChannelsRaw` (30-minute memory cache), `_onTvChannel` mapping, category extraction from the channels themselves, and the `OnTV` branch of `getStreamUrl` (a lookup, with one forced refetch if the id is missing) |
+| `lib/screens/tv_channels_screen.dart` | `_fetchChannels` now skips the disk cache for `OnTV` as well as `OqTV` |
+| `CLAUDE.md` | the TV paragraph now covers three providers |
+| `pubspec.yaml` | `1.0.9+10` → `1.0.10+11` |
+
+#### Verified on device (debug build, SM-A556E)
+
+| Check | Result |
+| --- | --- |
+| Source dropdown | **PASS** — `OqTV`, `OnTV`, `SpecUZ` |
+| OnTV "Barchasi" | **PASS** — "Kanallar soni: 84 ta", logos rendered |
+| OnTV categories | **PASS** — tabs `Pullik kanallar` / `Bepul kanallar`; the free tab shows exactly 6, matching the API |
+| OnTV playback | **PASS** — `Setanta Sports 1` played live at 1080p |
+| logcat during the run | **0** `E/flutter`, 0 `ExoPlaybackException` |
+| `flutter analyze lib` | 5 pre-existing infos, the unchanged baseline |
+
+### Session of 2026-08-22, part 2 — OqTV replaces SalomTV and BizTV
+
+The owner asked for the two legacy TV sources to go and for **OqTV** to take
+their place. The provider's own PHP client was supplied as the reference
+(`kinom_helper.php`, `tvchannels.php`, `watch.php`), so the protocol was read
+off working code rather than guessed, then re-verified request by request with
+`curl` before any Dart was written.
+
+#### What OqTV actually requires
+
+Two hosts and four calls before a stream URL exists:
+
+| Step | Call | Gives |
+| --- | --- | --- |
+| 1 | `POST https://api.oq.uz/token/base/` with `{"serial_number": …}` | anonymous `access` (a JWT bearer) |
+| 2 | `POST https://api.oq.uz/api/v1/kinom/auth/token/` with `Authorization: Bearer …` | `access_token` (catalogue) + `user_id` |
+| 3 | `POST /v2/users/self/devices?access_token=…` on `uzbeeline.platform24.tv` | device `id` |
+| 4 | `POST /v2/auth/device?access_token=…`, **form-encoded** `device_id` | `access_token` (stream) |
+
+Facts that cost a request each to establish, all measured on 2026-08-22:
+
+- **The catalogue token cannot fetch a stream.** `/v2/channels/{id}/stream`
+  answers `401 authentication_failed` ("Некорректные учетные данные") with it;
+  only the device token from step 4 works. Categories, by contrast, need only
+  the step-2 token.
+- **Step 4's body must be `application/x-www-form-urlencoded`.** That is what
+  the reference client sends, and it is the one call in the chain that is not
+  JSON.
+- **Device registration is not idempotent.** Registering twice with the *same*
+  serial returned two different ids (`0cde2e7f-…` and `4119e2f9-…`), so every
+  app start would otherwise add a row to the provider's account. The serial,
+  the device id and the stream token are therefore persisted in
+  `SharedPreferences` as `oqtv_serial` / `oqtv_device_id` / `oqtv_stream_token`.
+- **One request carries the whole tab.**
+  `/v2/users/self/channels/categories` returns 275 KB: 13 categories, each with
+  its channels inline, 98 unique channels in total, every one with a `cover`.
+  There is no per-category call to make.
+- **The provider localises by `Accept-Language`.** With `uz` the category names
+  come back Uzbek already ("Bolajonlarga", "Ma'rifat", "Musiqiy"); the Russian→
+  Uzbek map in the service is only a fallback for when they do not.
+- **`Все каналы` (id 2) is dropped.** It duplicates every other category and the
+  screen already has its own "Barchasi" tab.
+- The stream response carries both `hls_mbr` (multi-bitrate master) and `hls`;
+  the app prefers `hls_mbr`. The URL embeds the device token and expires, so it
+  is fetched fresh on every tap and never cached.
+
+#### Changes
+
+| File | Change |
+| --- | --- |
+| `lib/services/tv_api_service.dart` | `SalomTV` and `BizTV` removed with all their branches (`fetchAll` paging, `bizTvHeaders`); OqTV added — token chain, persisted device, cached category payload, `getStreamUrl` |
+| `lib/screens/tv_channels_screen.dart` | default source now `TVApiService.baseUrls.keys.first` (OqTV); the SalomTV/BizTV special cases in `_fetchChannels`, `_playChannel` and the grid's `onTap` are gone — every source now resolves its URL through `getStreamUrl(source:, channelId:)` |
+| `CLAUDE.md` | the "three providers" paragraph rewritten for the two that remain, with the OqTV chain documented |
+
+`getStreamUrl` is new and is the only place a channel id becomes a URL. The
+screen no longer needs to know that one source hands out URLs in the list and
+another needs a second request.
+
+#### Verified on device
+
+The app's auth gate makes the TV tab unreachable without a real login, so the
+service was exercised through a **temporary entry point**
+(`lib/oqtv_check_main.dart`, built with `flutter build apk --debug -t …`,
+installed as `uz.mrlg.riyaplay.debug`, deleted afterwards). It ran the real
+`TVApiService` code on the phone:
+
+```
+OQTV-CHECK kategoriyalar: 12         (Все каналы chiqarib tashlangan)
+OQTV-CHECK barcha kanallar: 98
+OQTV-CHECK birinchi: {id: 2712, title_uz: Al Jazeera HD, image: http://media…png}
+OQTV-CHECK kategoriya Bepul: 22 ta
+OQTV-CHECK rasmsiz kanallar: 0
+OQTV-CHECK strim (2712): http://37.110.212.133:80/mbrjwt/…/index.m3u8
+OQTV-CHECK m3u8 kodi: 200, 426 bayt
+OQTV-CHECK ikkinchi strim: true       (saqlangan qurilma tokeni qayta ishlatildi)
+OQTV-CHECK SpecUZ kategoriyalari: 7
+OQTV-CHECK SpecUZ kanallari: 143
+OQTV-CHECK SpecUZ strim: https://st1.uzdigital.tv/Kinopremera/index.m3u8?token=…
+```
+
+The category names came back Uzbek, the second stream call reused the stored
+device token instead of registering again, and SpecUZ — untouched by the
+change — still answers through the new `getStreamUrl` path.
+
+`flutter analyze lib`: the 5 pre-existing infos, the unchanged baseline.
+
+#### The defect the service test could not see: cleartext HTTP
+
+With the code working at the service level, the first real tap in the UI still
+failed:
+
+```
+E ExoPlayerImplInternal: Caused by: com.google.android.exoplayer2.upstream.HttpDataSource$CleartextNotPermittedException:
+                         Cleartext HTTP traffic not permitted.
+E ExoPlayerImplInternal: Caused by: java.io.IOException: Cleartext HTTP traffic to 37.110.212.134 not permitted
+```
+
+OqTV hands out **`http://<ip>:80/...`** playlists and those hosts have no TLS at
+all (an `https://` attempt to the same host returns nothing —
+`curl` exit code 000). Under `targetSdk = 34` Android blocks cleartext by
+default, so ExoPlayer refused the stream before the first byte.
+
+The Dart side never saw this, which is why the service check passed: Dart's
+`HttpClient` has its own stack and ignores Android's network security policy.
+Only the native players (ExoPlayer/OkHttp) enforce it.
+
+Fixed with `android/app/src/main/res/xml/network_security_config.xml`
+(`base-config cleartextTrafficPermitted="true"`), referenced from
+`<application android:networkSecurityConfig>`. The permission has to be general:
+the stream host is a bare IP that changes per session (37.110.212.133,
+37.110.212.134, 95.214.208.236 were all seen within one hour), so no domain
+allowlist would hold. Everything else the app talks to is HTTPS regardless.
+
+#### Verified in the UI (debug build, SM-A556E)
+
+Reaching the TV tab needs a real login, so the owner signed in on
+`uz.mrlg.riyaplay.debug` and the tab was driven from there:
+
+| Check | Result |
+| --- | --- |
+| Source dropdown | **PASS** — only `OqTV` and `SpecUZ`; OqTV is the default |
+| OqTV "Barchasi" | **PASS** — "Kanallar soni: 98 ta", logos rendered |
+| OqTV category tab | **PASS** — "Bolajonlarga" shows exactly 6 (matches the API) |
+| OqTV playback | **PASS** — `Al Jazeera HD` played live, fullscreen, no `E/flutter` |
+| Source switch → SpecUZ | **PASS** — 143 channels, Uzbek category names |
+| SpecUZ playback | **PASS** — `Кинопремьера` played through the new `getStreamUrl` |
+| Cleartext errors after the fix | **0** in logcat across both playbacks |
+### Session of 2026-08-22 — the release-build verification sweep
+
+Nothing was broken at the start of this session: the working tree was clean at
+`b7b7ac4`, `pubspec.yaml` was `1.0.9+10`, and the device carried the shipped
+release install `uz.mrlg.riyaplay` `versionName=1.0.9 versionCode=2010`. What
+was open were the rows that debug builds could not answer, so this session is a
+verification pass rather than a bug hunt. Four of them are now closed.
+
+#### 1. The alarm and its background isolate, on a release build
+
+The debug run of 2026-08-19 could not prove that AOT resolves the top-level
+`newContentAlarmCallback`; that is exactly the failure mode that killed the
+first implementation. Measured on the release install:
+
+```
+13:29:44.923 I/ActivityManager: Killing 3444:uz.mrlg.riyaplay/u0a1278 (adj 850): kill background
+13:29:45.086 I/ActivityManager: Start proc 8860:uz.mrlg.riyaplay/u0a1278 for broadcast
+                                {uz.mrlg.riyaplay/…androidalarmmanager.AlarmBroadcastReceiver}
+13:29:45.186 I/FlutterBackgroundExecutor: Starting AlarmService...
+13:29:45.318 I/AlarmService: AlarmService started!
+```
+
+No `E DartVM … must be annotated`, no `Fatal: failed to find callback`. The
+pending alarm was already due when the process was killed, so the broadcast
+started a *fresh* process — the killed-process path, on release.
+
+Proving the Dart side actually ran needed an indirect signal, because
+`appLogger` is `Level.nothing` in release and the package is not debuggable, so
+neither its logs nor its `SharedPreferences` can be read. Network accounting
+answered it: `dumpsys netstats detail`, summed over the `uid=11278 … tag=0x0`
+buckets, moved **`rb` 673,908,083 → 673,940,781 (+32,698 B)** and
+**`tb` 11,254,512 → 11,256,352 (+1,840 B)** across the alarm window, with no UI
+on screen and no other component of that uid alive. That is the poller's
+HTTPS fetch of `/v2/films/search` (~168 KB of JSON, ~32 KB gzipped), which runs
+*after* `NotificationService.init()` — so the plugin initialised in the
+background isolate too.
+
+The process then exited on its own, and the alarm stayed armed:
+`origWhen=2026-08-22 13:33:25.602 window=+3m45s0ms repeatInterval=300000`.
+The channel is live in the release install as well:
+`NotificationChannel{mId='riyaplay_new_content', mName=Yangi kontent, mImportance=4}`.
+
+#### 2. `ic_notification` survives the shipped release build
+
+Checked directly in the published `v1.0.9` arm64 APK rather than by inference:
+
+```
+aapt2 dump resources app-arm64-v8a-release.apk
+  resource 0x7f0800c7 drawable/ic_notification
+    () (file) res/vO.xml type=XML
+```
+
+`res/vO.xml` is 668 bytes and decodes to a real `<vector>` with
+`fillColor=#ffffffff` — not the empty stub the resource shrinker leaves behind.
+`res/raw/keep.xml` is doing its job in the build that actually shipped.
+
+#### 3. A notification really posts on a release build
+
+The detection rule cannot be provoked on a non-debuggable install (the baseline
+pref is unreachable and the catalogue's newest `publish_time` was ~19.5 h old
+and already seen), so the test was made possible by a **temporary patch**, kept
+only for the duration of the test:
+
+- `checkOnce()` rewound `new_content_last_publish_time` to `1787147328` once,
+  guarded by a throwaway `_force_new_content_test` flag.
+- `flutter build apk --release --split-per-abi --target-platform android-arm64`
+  (112.9 s, 45.3 MB, sha1 `7202321547b939011b080defc70c1f71ec9cbe96`).
+- `adb install -r` over the release install — same key, same
+  `versionCode 2010`, so the owner's session and data survived.
+
+Result, on the release build: **three** notifications, one per film published
+after that instant.
+
+| Notification | id | Icon |
+| --- | --- | --- |
+| `Yangi kontent mavjud` / `Pavana (2026) · Film · Melodrama, Dramma` | 17562 | `Icon(typ=RESOURCE pkg=uz.mrlg.riyaplay id=0x7f0800c7)` |
+| `Yangi kontent mavjud` / `O'gay ona (1973) · Film · Dramma` | 17571 | same |
+| `Yangi kontent mavjud` / `Adolat Tarozusi (2008) · Serial · Detektiv, Dramma` | 17569 | same |
+
+`0x7f0800c7` is exactly the `drawable/ic_notification` id from the `aapt2` dump
+above. All three carried their own poster as the large icon and were grouped
+under `groupKey=uz.mrlg.riyaplay.NEW_CONTENT` with an autogroup summary
+("Riya Play", count 3) — confirmed on screen, not only in `dumpsys`.
+
+Both tap paths were then exercised on release:
+
+- **App running** — tapping `O'gay ona` pushed `FilmScreen` for
+  *O'gay ona (1973)*; the tapped notification auto-cancelled, the other two
+  stayed.
+- **Process killed** (`am kill`, confirmed gone from `ps`) — tapping `Pavana`
+  cold-started the app straight onto `FilmScreen` for *Pavana (2026)*.
+
+Afterwards the shipped APK was reinstalled from a backup taken before the test
+(sha1 `40c6d00815f54b98c40a3b9f0dde711bba5f1799`, equal to the recorded
+`app-arm64-v8a-release.apk.sha1`), the source patch was reverted, and
+`flutter analyze` returned to the 5-info baseline. One harmless leftover: the
+release install's `SharedPreferences` still holds `_force_new_content_test`,
+a key no shipped code reads.
+
+#### 4. The alarm survives a real reboot
+
+`adb reboot`, then nothing else — the app was never opened.
+
+```
+13:45:46.543 I/ActivityManager: Start proc 11762:uz.mrlg.riyaplay/u0a1278 for broadcast
+                                {uz.mrlg.riyaplay/…androidalarmmanager.RebootBroadcastReceiver}
+13:45:46.644 I/AlarmService: Rescheduling after boot!
+```
+
+`dumpsys alarm` showed the alarm back at `13:45:46.736` with the **same**
+`origWhen=2026-08-22 13:47:21.527`, `window=+3m45s0ms`, `repeatInterval=300000`
+— `rescheduleOnReboot: true` preserves the schedule rather than restarting it.
+Device uptime at that check was 114.9 s. The phone was not locked at boot; on a
+locked FBE device `BOOT_COMPLETED` waits for the first unlock, so the
+reschedule would be delayed until then.
+
+The rescheduled alarm then fired on its own: `Starting AlarmService...` and
+`AlarmService started!` at **13:50:31** (pid 16709) against an `origWhen` of
+13:47:21.527 — 3m10s late, inside the `+3m45s` window the platform attaches to
+an inexact repeat. The app was never opened between the reboot and that fire,
+so the post-reboot path is verified end to end, not merely registered.
+
+#### 5. Memory over navigation cycles (the half the audit never covered)
+
+Release `1.0.9`, four Home → Katalog → `FilmScreen` → Back cycles with no
+playback, `dumpsys meminfo` after each:
+
+| Cycle | Java Heap (KB) | TOTAL PSS (KB) |
+| --- | --- | --- |
+| 1 | 10,352 | 488,394 |
+| 2 | 20,364 | 513,012 |
+| 3 | 16,856 | 503,100 |
+| 4 | 17,464 | 509,717 |
+
+Bounded and non-monotonic — the same shape the player cycles produced on
+2026-08-17. Nothing to chase here.
+
 ### Session of 2026-08-19 — new-content notifications
 
 A feature request, not a bug hunt: notify the user when the catalogue gets new
@@ -207,10 +537,10 @@ drops any queued id when `MainScreen` is disposed.
 | Merged manifest | **PASS.** All three plugin components and `RECEIVE_BOOT_COMPLETED` present in `processDebugMainManifest/AndroidManifest.xml` |
 | `flutter analyze lib` | 5 pre-existing infos, the unchanged baseline |
 
-Not tested: behaviour after a real reboot (`rescheduleOnReboot: true` is set and
-`AlarmService: Rescheduling after boot!` was logged, but no reboot was
-performed), Doze-deferred timing overnight, and the whole feature on a release
-build.
+Not tested *at the time*: behaviour after a real reboot, Doze-deferred timing
+overnight, and the whole feature on a release build. The reboot and the
+release build were both covered on **2026-08-22** and passed — see that
+session. Doze timing is still unmeasured.
 
 ### Session of 2026-08-19, part 2 — the bottom-inset sweep
 
@@ -2215,6 +2545,25 @@ App-side processing (decrypt + disk + persistence) was only **3%** of wall
 time; this stream is unencrypted so decryption cost was zero. The measurement
 was **stopped before a raw single-stream baseline was captured**.
 
+**Release-build sweep (device, SM-A556E, Android 16, `uz.mrlg.riyaplay`
+`1.0.9 / 2010`, 2026-08-22):**
+
+| Check | Result |
+| --- | --- |
+| Alarm fires after `am kill` on release | **PASS** — new process started for the broadcast, `AlarmService started!` 13:29:45.318 |
+| AOT resolves `newContentAlarmCallback` | **PASS** — no `DartVM … must be annotated`, no `Fatal: failed to find callback` |
+| The poller actually runs in the background isolate | **PASS** — uid traffic +32,698 B rx / +1,840 B tx with no UI |
+| Alarm stays armed after the isolate finishes | **PASS** — `origWhen 13:33:25.602 repeatInterval=300000` |
+| `ic_notification` present in the shipped APK | **PASS** — `drawable/ic_notification` → `res/vO.xml`, 668 B, real `<vector>` |
+| Notifications post on release (forced baseline) | **PASS** — 3 posted, icon `0x7f0800c7`, posters as large icons, grouped |
+| Tap with the app running | **PASS** — `FilmScreen` for `O'gay ona (1973)`, tapped one auto-cancelled |
+| Tap with the process killed | **PASS** — cold start onto `FilmScreen` for `Pavana (2026)` |
+| Shipped APK restored afterwards | **PASS** — sha1 `40c6d008…`, equal to the recorded `.sha1` |
+| Alarm survives a real reboot | **PASS** — `Rescheduling after boot!` 13:45:46.644, same `origWhen`, app never opened |
+| The rescheduled alarm fires | **PASS** — `AlarmService started!` 13:50:31.974, 3m10s of inexact-window jitter |
+| Memory over 4 navigation cycles | **PASS** — Java Heap 10.4 → 20.4 → 16.9 → 17.5 MB, bounded |
+| `flutter analyze` after reverting the patch | 5 pre-existing infos, the unchanged baseline |
+
 ### Not executed
 
 - No unit/widget/integration tests exist; none were added.
@@ -2302,7 +2651,7 @@ verified on device.)
 | ~~Publish `v1.0.8`~~ | Carries the new-content notifications, the bottom-inset sweep and the debug poster fix | `pubspec.yaml` | Medium | **DONE (2026-08-19)** | `1.0.8+9` → `1009 / 2009 / 4009`, verified with `aapt dump badging` on all three APKs, published 10:06 UTC as Latest with every asset `uploaded`. `gh release create` succeeded on the first attempt, no orphan draft |
 | The update dialog's release notes look truncated | Long notes stop mid-sentence at the bottom of the box, with no visible scrollbar or fade | `lib/services/update_service.dart` | Low | **Not a defect** | The notes already sit in `ConstrainedBox(maxHeight: 160)` + `SingleChildScrollView` and scroll fine — confirmed by hand on the `v1.0.5` dialog. Only the affordance is missing; add a `Scrollbar` or a bottom fade if it is worth it |
 | **Find the idle ~120 fps redraw on the home tab** | Measured, cause not isolated; the ring animation was ruled out | `lib/screens/index_screen.dart` | Medium | Not started | DevTools timeline on a profile build while the home tab sits untouched |
-| **Measure memory over navigation cycles** | Not covered by the audit | — | Medium | **Partly done (2026-08-17)** | The player half is measured on release: four play → Back cycles, Java heap 139 → 140 → 166 → 95 MB, bounded. Still unmeasured: Home → Catalog → FilmScreen cycles without playback, and TV channels |
+| ~~**Measure memory over navigation cycles**~~ | Not covered by the audit | — | Medium | **DONE for navigation (2026-08-22)** | Four Home → Katalog → FilmScreen → Back cycles on release `1.0.9`: Java Heap 10.4 → 20.4 → 16.9 → 17.5 MB, TOTAL PSS 488 → 513 → 503 → 510 MB — bounded, non-monotonic. The player half was already measured on 2026-08-17. Only TV channels remain unmeasured over *navigation* cycles, and their playback cycles are covered by the 2026-08-19 test |
 | ~~**Re-measure segment concurrency at 48**~~ | Raised from 24 by the owner's decision without a new measurement | `lib/services/download_service.dart` | Medium | **DONE (2026-08-19)** | 448 MB in 41.0 s on 4G+: **10.94 MB/s effective**, 11.44 MB/s network-only, against 9.11 MB/s at 24. No app restart, same pid throughout, and the file is byte-identical (436,429,687 B) to the clean 2026-08-13 download. 48 stays |
 | **Run the install-flow tests on a release build** | Every part-2 result was measured on `uz.mrlg.riyaplay.debug` | — | Medium | Not started | Same four scenarios against `uz.mrlg.riyaplay` once a newer release exists to offer |
 | ~~Decide the release asset naming~~ | — | `lib/services/update_service.dart` | Medium | **Settled** | `app-<abi>-release.apk`, the default `flutter build apk --split-per-abi` output. The atom fallback now depends on this name — renaming assets breaks it, so keep it |
@@ -2315,8 +2664,8 @@ verified on device.)
 | ~~Re-check TV channels after the disposal change~~ | `tv_channels_screen` pushes the same player for live streams; the disposal path changed for it too | `lib/screens/tv_channels_screen.dart` | Medium | **DONE (2026-08-19)** | SpecUZ source, `Кинопремьера`, three open → ~25 s → Back cycles. Java heap 14.5 → 31.1 → 30.6 → 29.2 MB, settling at 31.0. Bounded, no monotonic growth; app stayed on `MainActivity` |
 | Sessions shorter than 6 s are still not saved | `_minSavedSeconds = 5` is deliberate (an accidental open should not fill the row), but it does mean a very short first session leaves a `00:00` card | `lib/screens/video_player_screen.dart` | Low | By design | Revisit only if users complain about the empty card, not about the position |
 | ~~Notify on new catalogue content~~ | Feature request: "Yangi kontent mavjud", a short summary, tap opens the film | `lib/services/notification_service.dart`, `lib/services/new_content_service.dart`, `lib/services/new_content_scheduler.dart`, `lib/utils/notification_router.dart` | High | **DONE (2026-08-19)** | 5-minute timer while alive + inexact `AndroidAlarmManager.periodic` when killed, both driven by `publish_time`. Verified on device including the process-killed path — see the 2026-08-19 session |
-| Test the notification feature on a **release** build | Everything was measured on `uz.mrlg.riyaplay.debug`; release adds AOT, where a wrong `vm:entry-point` annotation fails differently | — | Medium | Not started | Build the arm64 split, kill the process and wait for one alarm cycle |
-| Verify the alarm survives a reboot | `rescheduleOnReboot: true` is set and `AlarmService: Rescheduling after boot!` was logged, but the device was never actually rebooted | `lib/services/new_content_scheduler.dart` | Low | Not started | Reboot, leave the app closed, and check `dumpsys alarm` for the `AlarmBroadcastReceiver` entry |
+| ~~Test the notification feature on a **release** build~~ | Everything was measured on `uz.mrlg.riyaplay.debug`; release adds AOT, where a wrong `vm:entry-point` annotation fails differently | — | Medium | **DONE (2026-08-22)** | Whole chain verified on `uz.mrlg.riyaplay` `1.0.9 / 2010`: killed process → alarm broadcast → `AlarmService started!` with no `DartVM` error, +32,698 B of uid traffic proving the poller ran, three notifications posted with the real `ic_notification` and their posters, and both tap paths (app running, process killed) reaching the right `FilmScreen`. See the 2026-08-22 session |
+| ~~Verify the alarm survives a reboot~~ | `rescheduleOnReboot: true` is set and `AlarmService: Rescheduling after boot!` was logged, but the device was never actually rebooted | `lib/services/new_content_scheduler.dart` | Low | **DONE (2026-08-22)** | Real `adb reboot`, app never opened: `Start proc … for broadcast {RebootBroadcastReceiver}` and `Rescheduling after boot!` at 13:45:46, and `dumpsys alarm` carried the same `origWhen 13:47:21.527 repeatInterval=300000` again |
 | Measure the notification gap under Doze | Only the awake-device jitter is measured (5 min → ~8m45s) | — | Low | Not started | Leave the phone untouched overnight and compare the alarm's fire times |
 | ~~Sweep the remaining full-screen routes for the bottom inset~~ | Only `FilmScreen` and `FilmsFullScreen` had been fixed | `actor_films_screen`, `genres_films_screen`, `genres_screen`, `download_screen` | Medium | **DONE (2026-08-19)** | Four screens fixed with the part-7 in-scrollable spacer (`download_screen` pads outside, on purpose); five others already reserved the inset via `SafeArea` or an existing `viewPadding.bottom` and were left alone; the TV tab was checked too and needs nothing. All verified by scrolling to the end on the device |
 | ~~Backport to `tplaytv`~~ | That project wrote the position only on exit/`WillPop`/`finished`, and its progress bars divided by `film['playback_time'] ?? 1` | `tplaytv/lib/screens/video_player_screen.dart`, `tplaytv/lib/widgets/index/index_sections.dart`, `tplaytv/lib/screens/latestviewed_screen.dart`, `tplaytv/lib/utils/latest_viewed.dart`, `tplaytv/lib/services/api_service.dart` | Medium | **DONE (2026-08-19)** | 30 s periodic sync, a `pause` write, write de-duplication, a `_finishHandled` guard, the shared `latest_viewed.dart` helper and `duration` added to both `fields` lists. `flutter analyze lib`: no issues. **Not exercised on a TV device** — only the phone was attached. The `?? 1`, not the field choice, was the real defect; see the corrected Important Discovery #3 |
@@ -2494,6 +2843,55 @@ New:
 
 ## Do Not Repeat
 
+- **Do not drop the `Authorization` header from the OnTV channel request.**
+  The endpoint answers 200 without it and still lists all 84 channels, but only
+  one of them keeps a stream URL — the rest are null. The failure looks like an
+  empty tab, not like an auth error.
+- **Do not persist an OnTV channel list.** Its `url_*` links are signed and
+  expire in ~6 hours; the service keeps them in memory for 30 minutes and the
+  screen deliberately skips its disk cache for that source.
+- **Do not call `/api/v2/categories` for OnTV tabs.** That is the film
+  catalogue's list (36 rows); the channel categories arrive inline with
+  `include=categories` and there are only two of them.
+- **Do not try to reach an OqTV stream with the catalogue token.**
+  `/v2/channels/{id}/stream` answers `401 authentication_failed` with the
+  `api.oq.uz` `access_token`. Only the device token from
+  `POST /v2/auth/device` works, and that call's body must be
+  `application/x-www-form-urlencoded`.
+- **Do not register an OqTV device on every launch.** The endpoint is not
+  idempotent — the same serial produced two different ids on 2026-08-22. The
+  serial, device id and stream token are kept in `SharedPreferences`
+  (`oqtv_serial`, `oqtv_device_id`, `oqtv_stream_token`) and reused.
+- **Do not cache an OqTV stream URL.** It embeds the device token and expires;
+  it is re-fetched on every tap. The category payload, by contrast, is worth
+  caching — one request returns all 13 categories with their channels inline.
+- **Do not test a media URL only from Dart.** Dart's `HttpClient` ignores
+  Android's network security policy, so an `http://` playlist fetches fine in a
+  service-level check and then fails in the player with
+  `CleartextNotPermittedException`. That is exactly what happened with OqTV on
+  2026-08-22; the fix is `res/xml/network_security_config.xml`. Any new media
+  source needs one real playback, not just a 200 from `http.get`.
+- **Do not replace that config with a domain allowlist.** OqTV's stream host is
+  a bare IP that changes per session (three distinct ones within an hour), so
+  there is no stable domain to whitelist.
+- **Do not re-verify the new-content notifications on a release build.** Done
+  on 2026-08-22 against `uz.mrlg.riyaplay` `1.0.9 / 2010`, end to end: the
+  killed-process alarm path, the background isolate under AOT, the posted
+  notifications with the real `ic_notification` and their posters, and both tap
+  paths. The numbers are in the 2026-08-22 session.
+- **Do not try to read or rewrite the release install's `SharedPreferences`.**
+  The release package is not debuggable, so `run-as` is refused and
+  `new_content_last_publish_time` cannot be rewound from outside. To force a
+  notification on release, patch `checkOnce()` to rewind the baseline once
+  behind a throwaway flag, rebuild the arm64 split, `adb install -r` over the
+  install (same key and `versionCode`, so data survives), then reinstall the
+  backed-up shipped APK and revert the patch. **Back the shipped APK up first**
+  — `flutter build` overwrites `build/app/outputs/flutter-apk/`.
+- **Do not expect `appLogger` to prove a release background isolate ran.** It is
+  silent in release. Use `dumpsys netstats detail` instead: sum the
+  `uid=<app uid> … tag=0x0` buckets before and after. A check that runs shows
+  ~32 KB of `rb` (the gzipped `/v2/films/search` page) with no UI on screen.
+  Only sum the `tag=0x0` sections — tagged sections are subsets of them.
 - **Do not annotate an alarm callback as a static method.**
   `@pragma('vm:entry-point')` on `NewContentScheduler.alarmCallback` was not
   enough — the VM refused it with `To access '…::NewContentScheduler' from
@@ -2722,6 +3120,16 @@ New:
   navigation bar. `FilmScreen` and `FilmsFullScreen` were fixed on 2026-08-17
   the same way part 7 fixed home/catalog/profile: pad inside the scrollable with
   `MediaQuery.viewPadding.bottom`.
+- **Do not re-measure memory over navigation cycles.** Done on 2026-08-22 on
+  release `1.0.9`: four Home → Katalog → FilmScreen → Back cycles left the Java
+  heap at 10.4 → 20.4 → 16.9 → 17.5 MB and PSS at 488 → 513 → 503 → 510 MB.
+  Bounded and non-monotonic, like the player cycles.
+- **Do not re-check that `keep.xml` saved `ic_notification`.** Verified inside
+  the shipped `v1.0.9` arm64 APK with
+  `aapt2 dump resources`: `drawable/ic_notification` → `res/vO.xml`, 668 bytes,
+  a real `<vector>` with `fillColor=#ffffffff`, and the posted notifications
+  carry `id=0x7f0800c7`, that same resource. Re-check only after changing the
+  shrinker settings or the resource's name.
 - **Do not redo the bottom-inset sweep.** Completed 2026-08-19: every pushed
   route plus the TV tab was read and scrolled to its end on the device.
   `actor_films_screen`, `genres_films_screen`, `genres_screen` and
@@ -2797,6 +3205,48 @@ New:
 
 ## Next Recommended Step
 
+**The TV tab was rebuilt on 2026-08-22** (parts 2 and 3): `SalomTV` and `BizTV`
+are gone, `OqTV` is the new default and `OnTV` is the third source. All three
+are verified on the device — 98 / 84 / 143 channels, category tabs, and live
+playback on each. It shipped as **`v1.0.10`**. Two things follow from it:
+
+- **`network_security_config.xml` now permits cleartext app-wide.** It is
+  required by OqTV's `http://` streams and by nothing else. If OqTV ever serves
+  HTTPS, tighten it back.
+- **OnTV's bearer expires in late March 2027** (`exp: 1806132793`). After that
+  its list still loads but arrives without stream URLs.
+
+Because `v1.0.10` is now newer than what any device carries, the two rows that
+were waiting for "a release newer than the installed one" are unblocked: the
+install flow on a release build, and the OTA SHA-256's first runtime exercise.
+
+**The release-build verification sweep is done** (2026-08-22). The whole
+new-content notification chain was exercised on `uz.mrlg.riyaplay` `1.0.9 /
+2010` — killed process, alarm broadcast, AOT background isolate, the poller's
+network call, three posted notifications with the real `ic_notification` and
+their posters, and both tap paths — plus a real reboot (`Rescheduling after
+boot!`, the same schedule restored, and the rescheduled alarm firing on its own
+at 13:50:31), plus the navigation-cycle memory measurement. Four Remaining Work
+rows closed. **Do not redo any of them.**
+
+**Only three device rows are still open**, and none of them is blocking:
+
+- **Doze timing** — leave the phone untouched overnight and compare the alarm's
+  fire times. Everything measured so far was on an awake device (5 min →
+  ~8m45s awake, and 3m10s of inexact-window jitter after the reboot).
+- **The install flow on a release build** — needs a release *newer* than the
+  installed `1.0.9 / 2010` to offer, so it waits for the next publish. When one
+  ships, run the same four permission scenarios against `uz.mrlg.riyaplay`; the
+  OTA SHA-256 check gets its first runtime exercise at the same time.
+- **The `tplaytv` backport on an Android TV box** — static-analysis clean but
+  never run; this machine has no TV device.
+
+The working tree is clean again: the temporary rewind patch used to force a
+release notification was reverted, `flutter analyze` is back to the 5-info
+baseline, and the device carries the byte-identical shipped `v1.0.9` APK
+(sha1 `40c6d00815f54b98c40a3b9f0dde711bba5f1799`). The only residue is an unread
+`_force_new_content_test` key in the release install's `SharedPreferences`.
+
 **The OTA chain is finished.** All four install-permission scenarios pass, both
 defects found while running them are fixed and re-verified on device, and the
 published APKs turned out to be correctly versioned after all. Nothing in the
@@ -2813,9 +3263,8 @@ redo it.
 **New-content notifications landed on 2026-08-19** and are verified on the
 device, including the case the whole feature exists for: the process killed, the
 alarm firing on its own, four notifications posted, and a tap cold-starting the
-app straight onto the film's page. What is left for them is release-build
-verification, a real reboot, and Doze timing — all three are rows in Remaining
-Work.
+app straight onto the film's page. Release-build verification and the reboot
+were both done on 2026-08-22 and passed; only Doze timing is still unmeasured.
 
 **The bottom-inset sweep is closed** (2026-08-19, part 2). Four screens were
 fixed and five were deliberately left alone because they already reserve the
@@ -2881,12 +3330,13 @@ The open list is the Medium/Low set at the end of this document:
   fallback, `ApiErrorHandler` coverage, TV-channel playback after the disposal
   change, a SHA-256 for the OTA download, and the `tplaytv` backport.~~ **All six
   DONE (2026-08-19)** — see part 4 of that session.
-- **What is left is release-build verification and one device this machine does
-  not have.** The notification feature and the install flow have only been
-  exercised on `uz.mrlg.riyaplay.debug`; the OTA checksum needs a release newer
-  than the installed one; the alarm has never survived a real reboot; Doze
-  timing is unmeasured; and the `tplaytv` backport compiles cleanly but has not
-  run on an Android TV box.
+- ~~**What is left is release-build verification and one device this machine
+  does not have.**~~ **Mostly DONE (2026-08-22)** — the notification feature is
+  now verified on the release build, and the alarm has survived a real reboot.
+  Three things still cannot be done here: the install flow on release (needs a
+  release newer than the installed `1.0.9 / 2010`, which also gates the OTA
+  SHA-256's first runtime exercise), Doze timing, and the `tplaytv` backport on
+  an Android TV box.
 - ~~Optional: the grid-density setting reached only the home rows, Katalog,
   Sevimlilar and the skeleton.~~ **DONE (2026-08-20)** — the remaining five
   grids read `GridDensityProvider.columns` too.
